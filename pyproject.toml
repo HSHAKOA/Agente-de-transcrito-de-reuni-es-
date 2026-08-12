@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeting-transcriber"
+version = "0.1.0"
+description = "Grava o audio de saida do sistema e transcreve reunioes longas para Markdown, usando faster-whisper local."
+requires-python = ">=3.9"
+dependencies = [
+    "soundcard>=0.4.3",
+    "faster-whisper>=1.0.0",
+    "soundfile>=0.12.1",
+    "numpy>=1.24",
+]
+
+[project.scripts]
+meeting-transcriber = "meeting_transcriber.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
