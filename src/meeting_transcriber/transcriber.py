@@ -35,8 +35,24 @@ class Transcriber:
     ):
         compute_type = "int8" if device == "cpu" else "float16"
         logger.info("Carregando modelo Whisper '%s' (device=%s, compute_type=%s)...", model_size, device, compute_type)
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        self.model = self._load_model(model_size, device, compute_type)
         self.language = language
+
+    @staticmethod
+    def _load_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
+        # Por padrao, o faster-whisper sempre bate no Hugging Face Hub pra
+        # revalidar o modelo, mesmo ja tendo ele em cache local — com
+        # internet lenta/instavel isso trava a inicializacao por dezenas de
+        # segundos (a gravacao nem comeca nesse tempo). Tenta primeiro 100%
+        # offline (instantaneo se o modelo ja foi baixado antes) e só usa a
+        # rede se ele realmente nao estiver em cache ainda.
+        try:
+            model = WhisperModel(model_size, device=device, compute_type=compute_type, local_files_only=True)
+            logger.info("Modelo '%s' carregado do cache local (offline).", model_size)
+            return model
+        except Exception:
+            logger.info("Modelo '%s' nao encontrado no cache local, baixando (requer internet)...", model_size)
+            return WhisperModel(model_size, device=device, compute_type=compute_type)
 
     def transcribe_file(self, path: Path, offset_seconds: float = 0.0) -> List[Segment]:
         """Transcreve um arquivo WAV e retorna os segmentos com os
