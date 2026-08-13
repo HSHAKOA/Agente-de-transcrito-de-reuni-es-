@@ -248,9 +248,26 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class SinglePortServer(ThreadingHTTPServer):
+    # Por padrao o http.server liga allow_reuse_address=True, que no
+    # Windows deixa VARIOS processos ligarem na mesma porta ao mesmo
+    # tempo (em vez de dar erro "porta em uso" como no Linux). Isso faz
+    # cada request cair num processo diferente/zumbi de forma aleatoria
+    # — sintoma classico: "as vezes funciona, as vezes nao", sem padrao.
+    # Desligando aqui, o segundo `python webui.py` falha ao subir em vez
+    # de virar um zumbi silencioso.
+    allow_reuse_address = False
+
+
 def main() -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}"
+    try:
+        server = SinglePortServer(("127.0.0.1", PORT), Handler)
+    except OSError:
+        print(f"Painel ja esta rodando em {url}. Abrindo o navegador nele em vez de subir outro.")
+        webbrowser.open(url)
+        return
+
     print(f"Painel disponivel em {url} (Ctrl+C aqui encerra o servidor, nao a gravacao).")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
