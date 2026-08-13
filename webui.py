@@ -26,6 +26,24 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 PORT = 8765
 
+
+def _python_executable() -> str:
+    """Python do .venv do projeto, se existir; senao, o mesmo que roda este script.
+
+    Nao basta usar sys.executable direto: se alguem abrir webui.py sem passar
+    pelo iniciar.bat (ex.: clicando duas vezes no .py), o Windows roda com o
+    Python global, que nao tem faster-whisper/soundcard instalados — so o
+    .venv tem. Procurar o .venv explicitamente evita esse erro silencioso.
+    """
+    candidates = [
+        ROOT / ".venv" / "Scripts" / "python.exe",  # Windows
+        ROOT / ".venv" / "bin" / "python",  # Linux/macOS
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
 state_lock = threading.Lock()
 state = {
     "proc": None,
@@ -61,7 +79,7 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
 
         output = opts.get("output") or "transcricao.md"
         cmd = [
-            sys.executable,
+            _python_executable(),
             "-u",
             "-m",
             "meeting_transcriber",
@@ -80,6 +98,13 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
         ]
         if not opts.get("keep_audio", True):
             cmd.append("--no-keep-audio")
+
+        if not (ROOT / ".venv").exists():
+            return False, (
+                "Ambiente virtual (.venv) nao encontrado. Feche esta janela e "
+                "abra o painel atraves do iniciar.bat, que instala tudo "
+                "automaticamente antes de abrir o navegador."
+            )
 
         env = {**__import__("os").environ, "PYTHONPATH": str(SRC), "PYTHONUNBUFFERED": "1"}
         creationflags = 0
