@@ -64,6 +64,19 @@
   }
   .msg{font-size:.82rem;color:var(--muted);margin-top:10px;min-height:1.2em}
   .msg.error{color:var(--danger)}
+
+  .file-path{
+    font-family:ui-monospace,Consolas,monospace;font-size:.78rem;color:var(--muted);
+    word-break:break-all;margin-bottom:16px;
+  }
+  .progress-row{margin-bottom:16px}
+  .progress-label{display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:6px}
+  .progress-track{height:8px;border-radius:999px;background:#0a0c10;border:1px solid var(--line);overflow:hidden}
+  .progress-fill{height:100%;width:0%;background:var(--accent);transition:width .3s linear}
+  .save-row{display:flex;align-items:center;gap:8px;font-size:.85rem;color:var(--text)}
+  .save-dot{width:9px;height:9px;border-radius:999px;background:var(--muted);flex-shrink:0}
+  .save-dot.saved{background:var(--ok);animation:saveflash 1.6s ease-out}
+  @keyframes saveflash{0%{box-shadow:0 0 0 0 rgba(47,184,110,.55)}100%{box-shadow:0 0 0 10px rgba(47,184,110,0)}}
   footer{color:var(--muted);font-size:.75rem;text-align:center;margin-top:24px}
 </style>
 </head>
@@ -132,6 +145,24 @@
     <p class="msg" id="msg"></p>
   </div>
 
+  <div class="card" id="fileCard" style="display:none">
+    <label style="margin-bottom:10px">Arquivo da transcrição</label>
+    <div class="file-path" id="filePath"></div>
+
+    <div class="progress-row" id="progressRow" style="display:none">
+      <div class="progress-label">
+        <span>Gravando bloco atual</span>
+        <span id="progressText">0s / 0s</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
+
+    <div class="save-row">
+      <span class="save-dot" id="saveDot"></span>
+      <span id="saveText">Ainda não salvou nada.</span>
+    </div>
+  </div>
+
   <div class="card">
     <label style="margin-bottom:10px">Log ao vivo</label>
     <div class="log" id="log"></div>
@@ -145,7 +176,22 @@ const $ = (id) => document.getElementById(id);
 const startBtn = $("startBtn"), stopBtn = $("stopBtn");
 const statusPill = $("statusPill"), statusText = $("statusText");
 const logEl = $("log"), msgEl = $("msg");
+const fileCard = $("fileCard"), filePath = $("filePath");
+const progressRow = $("progressRow"), progressFill = $("progressFill"), progressText = $("progressText");
+const saveDot = $("saveDot"), saveText = $("saveText");
 let lastLogLength = -1;
+let lastSavedAt = null;
+
+function formatClock(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m > 0 ? `${m}m${String(r).padStart(2, "0")}s` : `${r}s`;
+}
+
+function formatTimeOfDay(unixSeconds) {
+  return new Date(unixSeconds * 1000).toLocaleTimeString("pt-BR");
+}
 
 async function refreshStatus() {
   try {
@@ -161,6 +207,39 @@ async function refreshStatus() {
       logEl.textContent = data.log.join("\n");
       logEl.scrollTop = logEl.scrollHeight;
       lastLogLength = data.log.length;
+    }
+
+    if (data.output_path) {
+      fileCard.style.display = "";
+      filePath.textContent = "📄 " + data.output_path;
+
+      if (running && data.chunk_seconds) {
+        progressRow.style.display = "";
+        const elapsed = data.block_elapsed || 0;
+        const pct = Math.min(100, (elapsed / data.chunk_seconds) * 100);
+        progressFill.style.width = pct + "%";
+        progressText.textContent = `${formatClock(elapsed)} / ${formatClock(data.chunk_seconds)} (bloco ${(data.block_index || 0) + 1})`;
+      } else {
+        progressRow.style.display = "none";
+      }
+
+      if (data.output_exists && data.output_saved_at) {
+        const isNew = lastSavedAt !== null && data.output_saved_at !== lastSavedAt;
+        lastSavedAt = data.output_saved_at;
+        saveText.textContent = `Salvo às ${formatTimeOfDay(data.output_saved_at)} (${data.output_size} bytes)`;
+        if (isNew) {
+          saveDot.classList.remove("saved");
+          void saveDot.offsetWidth; // reinicia a animacao
+          saveDot.classList.add("saved");
+        } else if (!saveDot.classList.contains("saved")) {
+          saveDot.classList.add("saved");
+        }
+      } else {
+        saveText.textContent = "Ainda não salvou nada.";
+        saveDot.classList.remove("saved");
+      }
+    } else {
+      fileCard.style.display = "none";
     }
   } catch (e) {
     statusText.textContent = "Sem conexão com o painel";

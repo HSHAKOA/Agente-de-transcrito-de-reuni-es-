@@ -49,6 +49,7 @@ state = {
     "proc": None,
     "log": deque(maxlen=1000),
     "output": None,
+    "chunk_seconds": 300,
     "started_at": None,
     "finished_at": None,
     "exit_code": None,
@@ -78,6 +79,7 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
             return False, "Ja existe uma gravacao em andamento."
 
         output = opts.get("output") or "transcricao.md"
+        chunk_seconds = int(opts.get("chunk_seconds") or 300)
         cmd = [
             _python_executable(),
             "-u",
@@ -94,7 +96,7 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
             "--language",
             opts.get("language") or "pt",
             "--chunk-seconds",
-            str(opts.get("chunk_seconds") or 300),
+            str(chunk_seconds),
         ]
         if not opts.get("keep_audio", True):
             cmd.append("--no-keep-audio")
@@ -128,6 +130,7 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
 
         state["proc"] = proc
         state["output"] = output
+        state["chunk_seconds"] = chunk_seconds
         state["started_at"] = time.time()
         state["finished_at"] = None
         state["exit_code"] = None
@@ -162,14 +165,38 @@ def stop_transcriber() -> tuple[bool, str]:
 def get_status() -> dict:
     with state_lock:
         running = state["proc"] is not None
-        return {
+        output = state["output"]
+        chunk_seconds = state["chunk_seconds"]
+        started_at = state["started_at"]
+        payload = {
             "running": running,
-            "output": state["output"],
-            "started_at": state["started_at"],
+            "output": output,
+            "chunk_seconds": chunk_seconds,
+            "started_at": started_at,
             "finished_at": state["finished_at"],
             "exit_code": state["exit_code"],
             "log": list(state["log"])[-300:],
         }
+
+    # bloco atual: aproximado por relogio de parede, o processo grava em
+    # blocos continuos de chunk_seconds desde o inicio da sessao.
+    if running and started_at:
+        elapsed = time.time() - started_at
+        payload["block_elapsed"] = elapsed % chunk_seconds
+        payload["block_index"] = int(elapsed // chunk_seconds)
+
+    if output:
+        output_path = (ROOT / output).resolve()
+        payload["output_path"] = str(output_path)
+        if output_path.exists():
+            stat = output_path.stat()
+            payload["output_exists"] = True
+            payload["output_saved_at"] = stat.st_mtime
+            payload["output_size"] = stat.st_size
+        else:
+            payload["output_exists"] = False
+
+    return payload
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# transcricoes geradas pelo uso do app (dados do usuario, nao do codigo)
+/transcricao*.md
+/teste*.md
