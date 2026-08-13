@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agente de Transcrição de Reuniões</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b35;
+    --text:#eef0f3; --muted:#9aa1ad;
+    --accent:#4f7cff; --accent-dark:#3a5fd9;
+    --danger:#e0483f; --danger-dark:#b9382f;
+    --ok:#2fb86e;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,Segoe UI,Inter,Arial,sans-serif;
+    padding:32px 16px 64px;
+  }
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:1.5rem;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px;font-size:.9rem}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:20px;margin-bottom:20px;
+  }
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  @media (max-width:560px){.row{grid-template-columns:1fr}}
+  label{display:block;font-size:.78rem;font-weight:600;color:var(--muted);margin-bottom:6px}
+  input[type=text],input[type=number],select{
+    width:100%;background:#0f1115;border:1px solid var(--line);border-radius:8px;
+    padding:10px 12px;color:var(--text);font-size:.9rem;
+  }
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .checkbox-row{display:flex;align-items:center;gap:8px;margin-top:6px}
+  .checkbox-row input{width:auto}
+  .checkbox-row label{margin:0;color:var(--text);font-weight:400}
+
+  .status-pill{
+    display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;
+    font-size:.82rem;font-weight:700;background:#262b35;color:var(--muted);
+  }
+  .status-pill .dot{width:8px;height:8px;border-radius:999px;background:var(--muted)}
+  .status-pill.running{background:rgba(47,184,110,.15);color:var(--ok)}
+  .status-pill.running .dot{background:var(--ok);animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .actions{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:8px}
+  button{
+    border:none;border-radius:10px;padding:14px 28px;font-size:1rem;font-weight:700;
+    cursor:pointer;color:#fff;min-height:48px;transition:filter .15s;
+  }
+  button:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  #startBtn{background:var(--accent)}
+  #stopBtn{background:var(--danger)}
+
+  .log{
+    background:#0a0c10;border:1px solid var(--line);border-radius:10px;
+    padding:14px;height:280px;overflow-y:auto;font-family:ui-monospace,Consolas,monospace;
+    font-size:.78rem;line-height:1.5;color:#c9d1d9;white-space:pre-wrap;word-break:break-word;
+  }
+  .msg{font-size:.82rem;color:var(--muted);margin-top:10px;min-height:1.2em}
+  .msg.error{color:var(--danger)}
+  footer{color:var(--muted);font-size:.75rem;text-align:center;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎙️ Agente de Transcrição de Reuniões</h1>
+  <p class="sub">Grava o áudio de saída do computador e transcreve com Whisper local. Deixe rodando durante a reunião.</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="output">Arquivo de saída (.md)</label>
+        <input type="text" id="output" value="transcricao.md">
+      </div>
+      <div>
+        <label for="title">Título da reunião</label>
+        <input type="text" id="title" value="Transcrição de reunião">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="model">Modelo Whisper</label>
+        <select id="model">
+          <option value="tiny">tiny (mais rápido)</option>
+          <option value="base">base</option>
+          <option value="small" selected>small (recomendado)</option>
+          <option value="medium">medium</option>
+          <option value="large-v3">large-v3 (mais preciso)</option>
+        </select>
+      </div>
+      <div>
+        <label for="language">Idioma</label>
+        <select id="language">
+          <option value="pt" selected>Português</option>
+          <option value="en">Inglês</option>
+          <option value="auto">Detecção automática</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="device">Dispositivo</label>
+        <select id="device">
+          <option value="cpu" selected>CPU</option>
+          <option value="cuda">GPU (CUDA)</option>
+        </select>
+      </div>
+      <div>
+        <label for="chunkSeconds">Tamanho do bloco (segundos)</label>
+        <input type="number" id="chunkSeconds" value="300" min="30" step="30">
+      </div>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="keepAudio" checked>
+      <label for="keepAudio">Manter os áudios .wav de cada bloco (rede de segurança)</label>
+    </div>
+
+    <div class="actions" style="margin-top:20px">
+      <span class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Parado</span></span>
+      <div style="display:flex;gap:10px">
+        <button id="startBtn">▶ Iniciar gravação</button>
+        <button id="stopBtn" disabled>■ Parar</button>
+      </div>
+    </div>
+    <p class="msg" id="msg"></p>
+  </div>
+
+  <div class="card">
+    <label style="margin-bottom:10px">Log ao vivo</label>
+    <div class="log" id="log"></div>
+  </div>
+
+  <footer>Painel local — roda só na sua máquina em http://127.0.0.1:8765</footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const startBtn = $("startBtn"), stopBtn = $("stopBtn");
+const statusPill = $("statusPill"), statusText = $("statusText");
+const logEl = $("log"), msgEl = $("msg");
+let lastLogLength = -1;
+
+async function refreshStatus() {
+  try {
+    const res = await fetch("/api/status");
+    const data = await res.json();
+    const running = data.running;
+    statusPill.classList.toggle("running", running);
+    statusText.textContent = running ? "Gravando..." : "Parado";
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+
+    if (data.log.length !== lastLogLength) {
+      logEl.textContent = data.log.join("\n");
+      logEl.scrollTop = logEl.scrollHeight;
+      lastLogLength = data.log.length;
+    }
+  } catch (e) {
+    statusText.textContent = "Sem conexão com o painel";
+  }
+}
+
+startBtn.addEventListener("click", async () => {
+  msgEl.textContent = "";
+  msgEl.className = "msg";
+  const payload = {
+    output: $("output").value.trim() || "transcricao.md",
+    title: $("title").value.trim() || "Transcrição de reunião",
+    model: $("model").value,
+    language: $("language").value,
+    device: $("device").value,
+    chunk_seconds: Number($("chunkSeconds").value) || 300,
+    keep_audio: $("keepAudio").checked,
+  };
+  startBtn.disabled = true;
+  const res = await fetch("/api/start", { method: "POST", body: JSON.stringify(payload) });
+  const data = await res.json();
+  if (!data.ok) { msgEl.textContent = data.message; msgEl.className = "msg error"; startBtn.disabled = false; }
+  refreshStatus();
+});
+
+stopBtn.addEventListener("click", async () => {
+  stopBtn.disabled = true;
+  const res = await fetch("/api/stop", { method: "POST" });
+  const data = await res.json();
+  msgEl.textContent = data.message;
+  msgEl.className = "msg";
+  refreshStatus();
+});
+
+refreshStatus();
+setInterval(refreshStatus, 1500);
+</script>
+</body>
+</html>

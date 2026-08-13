@@ -12,6 +12,21 @@ paralelo com a gravacao continuando — memoria limitada e, se o processo cair,
 voce so perde o ultimo bloco parcial (o `.md` ja tem tudo que foi transcrito
 ate ali).
 
+## Modo facil (painel com botao, sem terminal)
+
+Se voce nao quer digitar comando nenhum: de dois cliques em `iniciar.bat`
+(Windows). Na primeira vez ele cria o ambiente virtual e instala as
+dependencias sozinho (demora um pouco so nessa primeira execucao); nas
+proximas abre na hora. Ele sobe um paineizinho local no navegador
+(`http://127.0.0.1:8765`) com campos para titulo, modelo, idioma etc. e um
+botao **Iniciar gravacao** / **Parar** — sem precisar mexer em linha de
+comando. O log da transcricao aparece ao vivo na propria pagina.
+
+Esse painel roda 100% na sua maquina (`webui.py`, so biblioteca padrao do
+Python) e apenas liga/desliga o mesmo `python -m meeting_transcriber` de
+sempre como um processo em segundo plano — nao muda nada do comportamento
+descrito abaixo.
+
 ## Limitacao importante
 
 Este agente captura **apenas o audio de SAIDA do sistema** (o que voce
