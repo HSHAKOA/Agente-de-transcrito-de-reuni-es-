@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Segment:
-    start: float
-    end: float
-    text: str
+    """Uma frase/trecho transcrito, com timestamp ja relativo a reuniao inteira."""
+
+    start: float  # segundo de inicio (dentro da gravacao completa)
+    end: float  # segundo de fim
+    text: str  # texto transcrito, ja sem espacos nas pontas
 
 
 class Transcriber:

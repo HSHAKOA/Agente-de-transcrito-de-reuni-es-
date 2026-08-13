@@ -1,3 +1,9 @@
+<!--
+  Painel do meeting_transcriber. Servido pelo webui.py (servidor local em
+  http://127.0.0.1:8765) — nao abrir este arquivo direto com duplo clique,
+  porque ai o JS abaixo nao teria a API (/api/start, /api/stop,
+  /api/status) pra conversar.
+-->
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -5,6 +11,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agente de Transcrição de Reuniões</title>
 <style>
+  /* paleta de cores do painel (tema escuro) */
   :root{
     --bg:#0f1115; --card:#171a21; --line:#262b35;
     --text:#eef0f3; --muted:#9aa1ad;
@@ -172,6 +179,11 @@
 </div>
 
 <script>
+// Toda a logica do painel: nenhum framework, so fetch() batendo na API
+// do webui.py. refreshStatus() roda a cada 1.5s (polling) e atualiza
+// status, barra de progresso do bloco atual, indicador de "salvo" e o
+// log ao vivo — e a unica funcao que le o backend, todo o resto so
+// dispara acoes (iniciar/parar) e deixa o proximo refresh refletir o resultado.
 const $ = (id) => document.getElementById(id);
 const startBtn = $("startBtn"), stopBtn = $("stopBtn");
 const statusPill = $("statusPill"), statusText = $("statusText");
@@ -182,6 +194,7 @@ const saveDot = $("saveDot"), saveText = $("saveText");
 let lastLogLength = -1;
 let lastSavedAt = null;
 
+// segundos -> "1m30s" ou "45s", pra barra de progresso do bloco atual
 function formatClock(seconds) {
   const s = Math.max(0, Math.round(seconds));
   const m = Math.floor(s / 60);
@@ -189,6 +202,7 @@ function formatClock(seconds) {
   return m > 0 ? `${m}m${String(r).padStart(2, "0")}s` : `${r}s`;
 }
 
+// timestamp unix (segundos, vindo do os.path.getmtime do Python) -> "14:32:10"
 function formatTimeOfDay(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleTimeString("pt-BR");
 }

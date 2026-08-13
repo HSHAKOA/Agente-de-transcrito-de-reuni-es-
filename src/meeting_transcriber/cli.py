@@ -59,13 +59,16 @@ def run(args: argparse.Namespace) -> int:
     language = None if args.language.lower() == "auto" else args.language
     keep_audio = not args.no_keep_audio
 
+    # pasta onde os .wav de cada bloco ficam guardados durante a sessao
     work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="meeting_transcriber_"))
-    own_work_dir = args.work_dir is None
+    own_work_dir = args.work_dir is None  # so apagamos a pasta se fomos nos que a criamos
 
-    stop_event = threading.Event()
-    chunk_queue: "queue.Queue[Optional[RecordedChunk]]" = queue.Queue()
+    stop_event = threading.Event()  # sinaliza pra thread de gravacao parar
+    chunk_queue: "queue.Queue[Optional[RecordedChunk]]" = queue.Queue()  # blocos prontos, aguardando transcricao
 
     def handle_sigint(signum, frame):  # noqa: ARG001
+        # 1o Ctrl+C: para a gravacao mas deixa terminar de transcrever o que
+        # ja foi gravado (graceful shutdown). 2o Ctrl+C: desiste na hora.
         if stop_event.is_set():
             logger.warning("Forcando encerramento imediato (sem finalizar a transcricao pendente).")
             os._exit(1)
@@ -77,36 +80,42 @@ def run(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
+    # a gravacao roda em thread separada da transcricao (ver recorder.py):
+    # gravar nunca espera transcrever, e vice-versa.
     recorder_thread = threading.Thread(
         target=recording_worker,
         args=(work_dir, args.chunk_seconds, stop_event, chunk_queue),
         daemon=True,
     )
 
-    writer = MarkdownWriter(args.output, args.title, args.model, language)
-    transcriber = Transcriber(model_size=args.model, device=args.device, language=language)
+    writer = MarkdownWriter(args.output, args.title, args.model, language)  # ja cria o .md com cabecalho
+    transcriber = Transcriber(model_size=args.model, device=args.device, language=language)  # carrega o Whisper
 
     logger.info("Gravando audio do sistema. Pressione Ctrl+C para parar e finalizar a transcricao.")
     recorder_thread.start()
 
     total_duration = 0.0
     try:
+        # loop principal: consome blocos gravados da fila, transcreve e
+        # anexa ao markdown, um por um, ate a gravacao sinalizar fim (None).
         while True:
-            chunk = chunk_queue.get()
+            chunk = chunk_queue.get()  # bloqueia ate ter um bloco pronto (ou None = acabou)
             if chunk is None:
                 break
             logger.info("Transcrevendo bloco %d (%.1fs)...", chunk.index, chunk.duration_seconds)
             try:
                 segments = transcriber.transcribe_file(chunk.path, offset_seconds=chunk.start_offset_seconds)
-                writer.append_segments(segments)
+                writer.append_segments(segments)  # escreve no .md JA, nao espera a sessao acabar
             except Exception as exc:  # um bloco com falha nao pode derrubar a sessao inteira
                 logger.exception("Falha ao transcrever o bloco %d", chunk.index)
                 writer.append_error_note(chunk.start_offset_seconds, chunk.path, exc)
                 continue  # mantem o .wav desse bloco mesmo com --no-keep-audio, para retentativa manual
             total_duration = chunk.start_offset_seconds + chunk.duration_seconds
             if not keep_audio:
-                chunk.path.unlink(missing_ok=True)
+                chunk.path.unlink(missing_ok=True)  # apaga o .wav so depois de transcrever com sucesso
     finally:
+        # roda mesmo se o loop acima quebrar por excecao: garante que o
+        # markdown fecha corretamente e a pasta temporaria e limpa.
         writer.finalize(total_duration)
         recorder_thread.join(timeout=5)
         if own_work_dir and keep_audio:

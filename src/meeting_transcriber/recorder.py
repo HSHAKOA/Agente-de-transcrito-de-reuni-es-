@@ -30,10 +30,12 @@ BLOCK_SECONDS = 0.5  # granularidade de leitura, para reagir rapido ao Ctrl+C
 
 @dataclass
 class RecordedChunk:
-    path: Path
-    index: int
-    start_offset_seconds: float
-    duration_seconds: float
+    """Metadados de um bloco de audio ja gravado em disco (pronto pra transcrever)."""
+
+    path: Path  # onde o .wav desse bloco foi salvo
+    index: int  # numero sequencial do bloco (0, 1, 2, ...) dentro da sessao
+    start_offset_seconds: float  # em que segundo da GRAVACAO INTEIRA esse bloco comeca
+    duration_seconds: float  # duracao real do bloco (pode ser menor que chunk_seconds no ultimo)
 
 
 def write_chunk(
@@ -76,22 +78,28 @@ def recording_worker(
     pode ficar bloqueado esperando a transcricao terminar.
     """
     session_dir.mkdir(parents=True, exist_ok=True)
-    block_frames = max(1, int(BLOCK_SECONDS * samplerate))
-    chunk_frames = int(chunk_seconds * samplerate)
+    block_frames = max(1, int(BLOCK_SECONDS * samplerate))  # frames por leitura (0.5s)
+    chunk_frames = int(chunk_seconds * samplerate)  # frames necessarios pra fechar 1 bloco completo
 
     mic = get_loopback_microphone()
-    buffer: List[np.ndarray] = []
+    buffer: List[np.ndarray] = []  # pedacinhos de 0.5s acumulados ate formar um bloco inteiro
     buffered_frames = 0
     chunk_index = 0
-    cumulative_seconds = 0.0
+    cumulative_seconds = 0.0  # posicao (em segundos) do inicio do proximo bloco na gravacao inteira
 
     try:
+        # abre o stream de gravacao uma unica vez e le em pedacos pequenos
+        # (BLOCK_SECONDS) pra continuar respondendo rapido ao Ctrl+C mesmo
+        # com chunk_seconds grande (ex.: 300s = 5min).
         with mic.recorder(samplerate=samplerate, channels=1) as rec:
             while not stop_event.is_set():
                 block = np.asarray(rec.record(numframes=block_frames), dtype=np.float32).reshape(-1)
                 buffer.append(block)
                 buffered_frames += len(block)
 
+                # buffer encheu o suficiente pra fechar mais um bloco: grava
+                # em disco e manda pra fila de transcricao (que roda em
+                # outra thread, sem travar a gravacao que continua aqui).
                 if buffered_frames >= chunk_frames:
                     chunk = write_chunk(buffer, session_dir, chunk_index, cumulative_seconds, samplerate)
                     logger.info(
@@ -102,6 +110,9 @@ def recording_worker(
                     buffer, buffered_frames = [], 0
                     out_queue.put(chunk)
 
+        # Ctrl+C interrompeu o loop: ainda sobra um bloco parcial (menor que
+        # chunk_seconds) no buffer — grava e transcreve ele tambem, senao
+        # os ultimos segundos da reuniao seriam perdidos.
         if buffer:
             chunk = write_chunk(buffer, session_dir, chunk_index, cumulative_seconds, samplerate)
             logger.info(
@@ -109,4 +120,5 @@ def recording_worker(
             )
             out_queue.put(chunk)
     finally:
+        # sinal de "acabou" pra thread consumidora parar de esperar por mais blocos
         out_queue.put(None)

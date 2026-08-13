@@ -44,12 +44,15 @@ def _python_executable() -> str:
             return str(candidate)
     return sys.executable
 
+# Estado global do painel, compartilhado entre as threads que atendem
+# requests HTTP e a thread que le a saida do subprocesso. state_lock
+# protege todo acesso porque varias threads mexem nele ao mesmo tempo.
 state_lock = threading.Lock()
 state = {
-    "proc": None,
-    "log": deque(maxlen=1000),
-    "output": None,
-    "chunk_seconds": 300,
+    "proc": None,  # subprocess.Popen do "python -m meeting_transcriber" em andamento, ou None se parado
+    "log": deque(maxlen=1000),  # ultimas linhas de log (stdout+stderr do subprocesso), pra pagina mostrar ao vivo
+    "output": None,  # caminho do .md que a sessao atual/ultima esta escrevendo
+    "chunk_seconds": 300,  # usado so pra calcular a barra de progresso do bloco atual
     "started_at": None,
     "finished_at": None,
     "exit_code": None,
@@ -57,11 +60,16 @@ state = {
 
 
 def _log(line: str) -> None:
+    """Adiciona uma linha ao log em memoria (thread-safe)."""
     with state_lock:
         state["log"].append(line.rstrip("\n"))
 
 
 def _reader_thread(proc: subprocess.Popen) -> None:
+    """Roda em background: le a saida do subprocesso linha a linha e vai
+    guardando no log, ate o processo terminar (naturalmente ou por termos
+    chamado stop_transcriber). So aqui descobrimos que o processo morreu.
+    """
     assert proc.stdout is not None
     for raw_line in proc.stdout:
         _log(raw_line)
@@ -69,11 +77,15 @@ def _reader_thread(proc: subprocess.Popen) -> None:
     with state_lock:
         state["finished_at"] = time.time()
         state["exit_code"] = exit_code
-        state["proc"] = None
+        state["proc"] = None  # libera pra um novo /api/start poder rodar
     _log(f"[painel] processo encerrado (codigo {exit_code}).")
 
 
 def start_transcriber(opts: dict) -> tuple[bool, str]:
+    """Monta o comando `python -m meeting_transcriber ...` a partir das
+    opcoes vindas do formulario HTML e sobe ele como subprocesso.
+    Retorna (sucesso, mensagem) pra virar a resposta JSON do /api/start.
+    """
     with state_lock:
         if state["proc"] is not None:
             return False, "Ja existe uma gravacao em andamento."
@@ -142,6 +154,13 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
 
 
 def stop_transcriber() -> tuple[bool, str]:
+    """Encerra o subprocesso em andamento.
+
+    terminate() no Windows mata na hora (sem rodar o handler de Ctrl+C do
+    cli.py), entao o bloco que estava sendo gravado nesse instante e
+    perdido — igual ao comportamento documentado pra uma queda inesperada.
+    Tudo que ja foi transcrito antes disso ja esta salvo no .md.
+    """
     with state_lock:
         proc = state["proc"]
     if proc is None:
@@ -153,6 +172,8 @@ def stop_transcriber() -> tuple[bool, str]:
     except Exception:
         pass
 
+    # rede de seguranca: se por algum motivo terminate() nao surtir efeito,
+    # forca depois de 8s (kill nao pode falhar/travar).
     def _force_kill_later():
         time.sleep(8)
         if proc.poll() is None:
@@ -163,6 +184,8 @@ def stop_transcriber() -> tuple[bool, str]:
 
 
 def get_status() -> dict:
+    """Monta o JSON que a pagina consulta a cada 1.5s (polling) pra
+    atualizar status, barra de progresso, log e indicador de "salvo"."""
     with state_lock:
         running = state["proc"] is not None
         output = state["output"]
@@ -200,6 +223,11 @@ def get_status() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    """Roteador HTTP minimo: serve o index.html e as 3 rotas da API.
+    Cada request roda numa thread propria (heranca de ThreadingHTTPServer),
+    entao /api/status continua respondendo rapido mesmo com uma gravacao
+    em andamento no subprocesso."""
+
     def log_message(self, format, *args):  # noqa: A002 - silencia log padrao no console
         pass
 
@@ -213,9 +241,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path == "/index.html":
-            self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")
+            self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")  # sempre le do disco, sem cache
         elif self.path == "/api/status":
-            self._send_json(get_status())
+            self._send_json(get_status())  # consultado pela pagina a cada 1.5s
         else:
             self.send_error(404)
 
@@ -228,6 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
 
         if self.path == "/api/start":
+            # body = {output, title, model, device, language, chunk_seconds, keep_audio}
             ok, msg = start_transcriber(body)
             self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":

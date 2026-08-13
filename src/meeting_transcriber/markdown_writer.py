@@ -16,6 +16,7 @@ from .transcriber import Segment
 
 
 def format_timestamp(seconds: float) -> str:
+    """Converte segundos (float) em HH:MM:SS pra exibir no markdown."""
     total = max(0, int(seconds))
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
@@ -25,7 +26,7 @@ def format_timestamp(seconds: float) -> str:
 class MarkdownWriter:
     def __init__(self, path: Path, title: str, model_size: str, language: Optional[str]):
         self.path = path
-        self._write_header(title, model_size, language)
+        self._write_header(title, model_size, language)  # cria o arquivo com o cabecalho ja na hora que a sessao comeca
 
     def _write_header(self, title: str, model_size: str, language: Optional[str]) -> None:
         started = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -12,7 +12,7 @@ em modo de gravacao (loopback):
 
 from __future__ import annotations
 
-SAMPLE_RATE = 16_000  # taxa de amostragem esperada pelo Whisper
+SAMPLE_RATE = 16_000  # taxa de amostragem esperada pelo Whisper (16kHz mono)
 
 
 def get_loopback_microphone() -> "sc.Microphone":  # noqa: F821 - sc importado sob demanda abaixo
@@ -28,8 +28,12 @@ def get_loopback_microphone() -> "sc.Microphone":  # noqa: F821 - sc importado s
     """
     import soundcard as sc
 
+    # pega o dispositivo de SAIDA padrao do sistema operacional (o que
+    # aparece em Configuracoes > Som > Saida no Windows)...
     speaker = sc.default_speaker()
     try:
+        # ...e abre esse MESMO dispositivo em modo de gravacao/loopback:
+        # e assim que se grava "o que esta tocando" em vez do microfone.
         return sc.get_microphone(id=speaker.name, include_loopback=True)
     except Exception as exc:  # depende de SO/driver, dificil restringir o tipo
         raise RuntimeError(
