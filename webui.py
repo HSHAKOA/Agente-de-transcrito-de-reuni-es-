@@ -2,9 +2,15 @@
 
 Sobe um servidor HTTP so com a biblioteca padrao (sem Flask/FastAPI, sem
 dependencia extra) em http://127.0.0.1:8765, serve o index.html e expoe uma
-API minima (/api/start, /api/stop, /api/status) que liga/desliga o processo
+API minima (/api/start, /api/stop, /api/status, /api/recovery,
+/api/meetings/<id>/resume) que liga/desliga o processo
 `python -m meeting_transcriber` como subprocesso e guarda o log em memoria
 para a pagina exibir ao vivo.
+
+O servidor so escuta em 127.0.0.1 (nunca 0.0.0.0) e valida todo campo vindo
+do navegador antes de repassar para o subprocesso — ver `meeting_transcriber
+.validation`. Isso importa mesmo rodando "so localmente": qualquer aba aberta
+no mesmo navegador pode, em tese, tentar falar com esse endereco.
 
 Uso: python webui.py   (ou clique duplo em iniciar.bat, que ja prepara o
 ambiente virtual antes de chamar isto aqui).
@@ -13,6 +19,10 @@ ambiente virtual antes de chamar isto aqui).
 from __future__ import annotations
 
 import json
+import logging
+import os
+import re
+import signal
 import subprocess
 import sys
 import threading
@@ -21,10 +31,36 @@ import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
+MEETINGS_DIR = ROOT / "data" / "meetings"
+
+# webui.py em si (nao so o subprocesso que ele lanca) agora usa
+# meeting_transcriber.validation/session, entao precisa de src/ no
+# sys.path tambem quando rodado direto (fora do .venv com editable install).
+sys.path.insert(0, str(SRC))
+
+from meeting_transcriber import validation  # noqa: E402
+from meeting_transcriber.session import (  # noqa: E402
+    STATUS_INTERRUPTED,
+    list_sessions,
+    mark_interrupted_sessions,
+    new_meeting_id,
+)
+
 PORT = 8765
+MAX_BODY_BYTES = 1_000_000  # 1 MB — generoso pros campos reais, barra corpo gigante como DoS
+_DRAIN_CAP_BYTES = MAX_BODY_BYTES * 4  # teto pra drenar um corpo rejeitado sem nunca ler quantidade ilimitada
+
+# Escalonamento do encerramento gracioso: sinal gracioso -> terminate() -> kill().
+# So avanca de estagio se o anterior nao surtir efeito dentro do timeout.
+GRACEFUL_TIMEOUT_SECONDS = 30.0
+TERMINATE_TIMEOUT_SECONDS = 5.0
+
+logger = logging.getLogger("meeting_transcriber.webui")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 def _python_executable() -> str:
@@ -44,6 +80,75 @@ def _python_executable() -> str:
             return str(candidate)
     return sys.executable
 
+
+def _graceful_signal_for_platform() -> int:
+    """No Windows, so CTRL_BREAK_EVENT pode ser enviado para outro processo
+    (CTRL_C_EVENT e desabilitado para processos criados com
+    CREATE_NEW_PROCESS_GROUP — exatamente a flag usada ao lancar o
+    subprocesso, ver `start_transcriber`). cli.py registra um handler pra
+    SIGBREAK (o sinal que o Python expoe pra CTRL_BREAK_EVENT) que faz a
+    mesma coisa que o Ctrl+C no terminal: para a gravacao e deixa a fila de
+    transcricao pendente terminar antes de sair.
+    """
+    if sys.platform == "win32":
+        return signal.CTRL_BREAK_EVENT
+    return signal.SIGINT
+
+
+def _wait_until_dead(proc: subprocess.Popen, timeout: float, sleep_fn, poll_interval: float) -> bool:
+    elapsed = 0.0
+    while elapsed < timeout:
+        if proc.poll() is not None:
+            return True
+        sleep_fn(poll_interval)
+        elapsed += poll_interval
+    return proc.poll() is not None
+
+
+def shutdown_sequence(
+    proc: subprocess.Popen,
+    graceful_signal: Optional[int] = None,
+    graceful_timeout: float = GRACEFUL_TIMEOUT_SECONDS,
+    terminate_timeout: float = TERMINATE_TIMEOUT_SECONDS,
+    sleep_fn=time.sleep,
+    poll_interval: float = 0.2,
+) -> str:
+    """Encerra `proc` com escalonamento: sinal gracioso -> terminate() -> kill().
+
+    Antes, "Parar" no painel chamava proc.terminate() direto — no Windows
+    isso mata o processo na hora (sem entregar sinal nenhum), descartando o
+    bloco de audio que ainda estava no buffer e pulando a finalizacao do
+    markdown. Essa funcao so escala pro proximo estagio se o anterior nao
+    surtir efeito dentro do timeout, dando tempo real pra fila de whisper
+    pendente ser drenada. Retorna qual estagio encerrou o processo
+    ("graceful", "terminate" ou "kill") — usado em log e em testes.
+    """
+    graceful_signal = graceful_signal if graceful_signal is not None else _graceful_signal_for_platform()
+
+    try:
+        proc.send_signal(graceful_signal)
+    except Exception:
+        logger.exception("Falha ao enviar sinal de parada graciosa")
+    if _wait_until_dead(proc, graceful_timeout, sleep_fn, poll_interval):
+        return "graceful"
+
+    logger.warning("Processo nao parou graciosamente em %.0fs; usando terminate().", graceful_timeout)
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    if _wait_until_dead(proc, terminate_timeout, sleep_fn, poll_interval):
+        return "terminate"
+
+    logger.warning("Processo nao respondeu a terminate(); usando kill() como ultimo recurso.")
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    _wait_until_dead(proc, terminate_timeout, sleep_fn, poll_interval)
+    return "kill"
+
+
 # Estado global do painel, compartilhado entre as threads que atendem
 # requests HTTP e a thread que le a saida do subprocesso. state_lock
 # protege todo acesso porque varias threads mexem nele ao mesmo tempo.
@@ -53,6 +158,7 @@ state = {
     "log": deque(maxlen=1000),  # ultimas linhas de log (stdout+stderr do subprocesso), pra pagina mostrar ao vivo
     "output": None,  # caminho do .md que a sessao atual/ultima esta escrevendo
     "chunk_seconds": 300,  # usado so pra calcular a barra de progresso do bloco atual
+    "meeting_dir": None,
     "started_at": None,
     "finished_at": None,
     "exit_code": None,
@@ -81,37 +187,53 @@ def _reader_thread(proc: subprocess.Popen) -> None:
     _log(f"[painel] processo encerrado (codigo {exit_code}).")
 
 
-def start_transcriber(opts: dict) -> tuple[bool, str]:
-    """Monta o comando `python -m meeting_transcriber ...` a partir das
-    opcoes vindas do formulario HTML e sobe ele como subprocesso.
+def _launch(cmd: list[str]) -> "tuple[subprocess.Popen, Optional[str]]":
+    """Sobe `cmd` como subprocesso com o ambiente/flags corretos.
+    `creationflags=CREATE_NEW_PROCESS_GROUP` no Windows e o que permite
+    mandar CTRL_BREAK_EVENT depois (ver `_graceful_signal_for_platform`)."""
+    env = {**os.environ, "PYTHONPATH": str(SRC), "PYTHONUNBUFFERED": "1"}
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+    except FileNotFoundError as exc:
+        return None, f"Nao consegui iniciar o processo: {exc}"
+    return proc, None
+
+
+def start_transcriber(opts: dict) -> "tuple[bool, str]":
+    """Valida as opcoes vindas do formulario HTML, monta o comando
+    `python -m meeting_transcriber ...` e sobe ele como subprocesso.
     Retorna (sucesso, mensagem) pra virar a resposta JSON do /api/start.
+
+    Nenhum campo e confiado sem validacao — ver meeting_transcriber.validation.
+    Isso inclui o nome do arquivo de saida: so um nome simples e aceito,
+    nunca um caminho (barra a escrita de arquivo arbitraria/path traversal).
     """
+    try:
+        model = validation.validate_model(opts.get("model") or "small")
+        device = validation.validate_device(opts.get("device") or "cpu")
+        language = validation.validate_language(opts.get("language") or "pt")
+        chunk_seconds = validation.validate_chunk_seconds(opts.get("chunk_seconds", 300))
+        title = validation.validate_title(opts.get("title"))
+        output_path = validation.validate_output_filename(opts.get("output"), ROOT)
+    except validation.ValidationError as exc:
+        return False, str(exc)
+
+    keep_audio = bool(opts.get("keep_audio", True))
+
     with state_lock:
         if state["proc"] is not None:
             return False, "Ja existe uma gravacao em andamento."
-
-        output = opts.get("output") or "transcricao.md"
-        chunk_seconds = int(opts.get("chunk_seconds") or 300)
-        cmd = [
-            _python_executable(),
-            "-u",
-            "-m",
-            "meeting_transcriber",
-            "--output",
-            output,
-            "--title",
-            opts.get("title") or "Transcricao de reuniao",
-            "--model",
-            opts.get("model") or "small",
-            "--device",
-            opts.get("device") or "cpu",
-            "--language",
-            opts.get("language") or "pt",
-            "--chunk-seconds",
-            str(chunk_seconds),
-        ]
-        if not opts.get("keep_audio", True):
-            cmd.append("--no-keep-audio")
 
         if not (ROOT / ".venv").exists():
             return False, (
@@ -120,29 +242,40 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
                 "automaticamente antes de abrir o navegador."
             )
 
-        env = {**__import__("os").environ, "PYTHONPATH": str(SRC), "PYTHONUNBUFFERED": "1"}
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        meeting_id = new_meeting_id()
+        meeting_dir = MEETINGS_DIR / meeting_id
 
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=creationflags,
-            )
-        except FileNotFoundError as exc:
-            return False, f"Nao consegui iniciar o processo: {exc}"
+        cmd = [
+            _python_executable(),
+            "-u",
+            "-m",
+            "meeting_transcriber",
+            "--output",
+            str(output_path),
+            "--title",
+            title,
+            "--model",
+            model,
+            "--device",
+            device,
+            "--language",
+            language,
+            "--chunk-seconds",
+            str(chunk_seconds),
+            "--meeting-dir",
+            str(meeting_dir),
+        ]
+        if not keep_audio:
+            cmd.append("--no-keep-audio")
+
+        proc, error = _launch(cmd)
+        if error:
+            return False, error
 
         state["proc"] = proc
-        state["output"] = output
+        state["output"] = str(output_path)
         state["chunk_seconds"] = chunk_seconds
+        state["meeting_dir"] = str(meeting_dir)
         state["started_at"] = time.time()
         state["finished_at"] = None
         state["exit_code"] = None
@@ -153,34 +286,59 @@ def start_transcriber(opts: dict) -> tuple[bool, str]:
     return True, "Gravacao iniciada."
 
 
-def stop_transcriber() -> tuple[bool, str]:
-    """Encerra o subprocesso em andamento.
-
-    terminate() no Windows mata na hora (sem rodar o handler de Ctrl+C do
-    cli.py), entao o bloco que estava sendo gravado nesse instante e
-    perdido — igual ao comportamento documentado pra uma queda inesperada.
-    Tudo que ja foi transcrito antes disso ja esta salvo no .md.
+def stop_transcriber() -> "tuple[bool, str]":
+    """Pede o encerramento do subprocesso em andamento com shutdown
+    gracioso: sinaliza parada (o subprocesso ainda termina de escrever o
+    bloco parcial e finalizar o markdown), e so escala para terminate()/
+    kill() se ele nao responder dentro do timeout (ver shutdown_sequence).
     """
     with state_lock:
         proc = state["proc"]
     if proc is None:
         return False, "Nenhuma gravacao em andamento."
 
-    _log("[painel] parando... aguarde a finalizacao do bloco atual.")
+    _log("[painel] parando... aguardando a finalizacao do bloco atual (pode levar ate alguns minutos).")
+    threading.Thread(target=shutdown_sequence, args=(proc,), daemon=True).start()
+    return True, "Parando a gravacao (encerramento gracioso, aguarde)."
+
+
+def resume_meeting(meeting_id: str) -> "tuple[bool, str]":
+    """Sobe `python -m meeting_transcriber --resume <meeting_dir>` para
+    reprocessar os blocos pendentes/com falha de uma sessao interrompida.
+    Nao grava audio novo, entao pode rodar mesmo sem microfone/loopback."""
     try:
-        proc.terminate()
-    except Exception:
-        pass
+        meeting_id = validation.validate_meeting_id(meeting_id)
+    except validation.ValidationError as exc:
+        return False, str(exc)
 
-    # rede de seguranca: se por algum motivo terminate() nao surtir efeito,
-    # forca depois de 8s (kill nao pode falhar/travar).
-    def _force_kill_later():
-        time.sleep(8)
-        if proc.poll() is None:
-            proc.kill()
+    meetings_resolved = MEETINGS_DIR.resolve()
+    meeting_dir = (meetings_resolved / meeting_id).resolve()
+    if meeting_dir.parent != meetings_resolved:
+        return False, "Sessao invalida."
+    if not (meeting_dir / "state.json").exists():
+        return False, "Sessao nao encontrada."
 
-    threading.Thread(target=_force_kill_later, daemon=True).start()
-    return True, "Parando a gravacao."
+    with state_lock:
+        if state["proc"] is not None:
+            return False, "Ja existe uma gravacao/reprocessamento em andamento."
+
+        cmd = [_python_executable(), "-u", "-m", "meeting_transcriber", "--resume", str(meeting_dir)]
+        proc, error = _launch(cmd)
+        if error:
+            return False, error
+
+        state["proc"] = proc
+        state["output"] = None
+        state["chunk_seconds"] = None
+        state["meeting_dir"] = str(meeting_dir)
+        state["started_at"] = time.time()
+        state["finished_at"] = None
+        state["exit_code"] = None
+        state["log"].clear()
+
+    _log(f"[painel] reprocessando sessao interrompida {meeting_id}...")
+    threading.Thread(target=_reader_thread, args=(proc,), daemon=True).start()
+    return True, "Reprocessamento iniciado."
 
 
 def get_status() -> dict:
@@ -203,13 +361,13 @@ def get_status() -> dict:
 
     # bloco atual: aproximado por relogio de parede, o processo grava em
     # blocos continuos de chunk_seconds desde o inicio da sessao.
-    if running and started_at:
+    if running and started_at and chunk_seconds:
         elapsed = time.time() - started_at
         payload["block_elapsed"] = elapsed % chunk_seconds
         payload["block_index"] = int(elapsed // chunk_seconds)
 
     if output:
-        output_path = (ROOT / output).resolve()
+        output_path = Path(output)
         payload["output_path"] = str(output_path)
         if output_path.exists():
             stat = output_path.stat()
@@ -222,8 +380,22 @@ def get_status() -> dict:
     return payload
 
 
+def get_recovery() -> dict:
+    """Sessoes que ficaram travadas em recording/processing e foram
+    marcadas como interrompidas na inicializacao do painel (ver `main`) —
+    ou seja, reunioes cujo processo morreu sem finalizar. O audio e a
+    transcricao parcial de cada uma continuam intactos em disco."""
+    sessions = [s for s in list_sessions(MEETINGS_DIR) if s.get("status") == STATUS_INTERRUPTED]
+    return {"sessions": sessions}
+
+
+_RESUME_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/resume$")
+
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
+
+
 class Handler(BaseHTTPRequestHandler):
-    """Roteador HTTP minimo: serve o index.html e as 3 rotas da API.
+    """Roteador HTTP minimo: serve o index.html e as rotas da API.
     Cada request roda numa thread propria (heranca de ThreadingHTTPServer),
     entao /api/status continua respondendo rapido mesmo com uma gravacao
     em andamento no subprocesso."""
@@ -231,39 +403,100 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002 - silencia log padrao no console
         pass
 
+    def _valid_host(self) -> bool:
+        # Defesa basica contra DNS rebinding / paginas de outros dominios
+        # tentando falar com o servidor local: so aceita Host apontando pra
+        # este mesmo endereco. O servidor em si so escuta em 127.0.0.1 (ver
+        # main()), nunca em 0.0.0.0 — isso aqui e uma camada extra.
+        host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        return host in _ALLOWED_HOSTS
+
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/" or self.path == "/index.html":
-            self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")  # sempre le do disco, sem cache
-        elif self.path == "/api/status":
-            self._send_json(get_status())  # consultado pela pagina a cada 1.5s
-        else:
-            self.send_error(404)
+        if not self._valid_host():
+            self.send_error(400, "Host invalido")
+            return
+        try:
+            if self.path == "/" or self.path == "/index.html":
+                self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")  # sempre le do disco, sem cache
+            elif self.path == "/api/status":
+                self._send_json(get_status())  # consultado pela pagina a cada 1.5s
+            elif self.path == "/api/recovery":
+                self._send_json(get_recovery())
+            else:
+                self.send_error(404)
+        except Exception:
+            logger.exception("Erro tratando GET %s", self.path)
+            self._send_json({"ok": False, "message": "Erro interno no painel."}, 500)
 
     def do_POST(self):  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
+        if not self._valid_host():
+            self.send_error(400, "Host invalido")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send_json({"ok": False, "message": "Content-Length invalido."}, 400)
+            return
+        if length < 0:
+            self._send_json({"ok": False, "message": "Content-Length invalido."}, 400)
+            return
+        if length > MAX_BODY_BYTES:
+            # drena (e descarta) o corpo antes de responder, ate um teto
+            # seguro -- nunca mais que _DRAIN_CAP_BYTES, mesmo que o
+            # Content-Length declarado minta e seja muito maior. Sem isso,
+            # bytes nao lidos ficam pendurados no socket e o SO pode
+            # resetar a conexao abruptamente ao inves de entregar esta
+            # resposta 413 de forma limpa pro cliente.
+            remaining = min(length, _DRAIN_CAP_BYTES)
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            self.close_connection = True
+            self._send_json({"ok": False, "message": "Corpo da requisicao muito grande."}, 413)
+            return
+
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw or b"{}")
         except json.JSONDecodeError:
-            body = {}
+            self._send_json({"ok": False, "message": "JSON invalido."}, 400)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"ok": False, "message": "Corpo da requisicao precisa ser um objeto JSON."}, 400)
+            return
 
-        if self.path == "/api/start":
-            # body = {output, title, model, device, language, chunk_seconds, keep_audio}
-            ok, msg = start_transcriber(body)
-            self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
-        elif self.path == "/api/stop":
-            ok, msg = stop_transcriber()
-            self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
-        else:
+        try:
+            if self.path == "/api/start":
+                # body = {output, title, model, device, language, chunk_seconds, keep_audio}
+                ok, msg = start_transcriber(body)
+                self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+                return
+            if self.path == "/api/stop":
+                ok, msg = stop_transcriber()
+                self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+                return
+            match = _RESUME_PATH_RE.match(self.path)
+            if match:
+                ok, msg = resume_meeting(match.group(1))
+                self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+                return
             self.send_error(404)
+        except Exception:
+            logger.exception("Erro tratando POST %s", self.path)
+            self._send_json({"ok": False, "message": "Erro interno no painel."}, 500)
 
     def _serve_file(self, path: Path, content_type: str) -> None:
         if not path.exists():
@@ -273,6 +506,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
@@ -289,8 +523,26 @@ class SinglePortServer(ThreadingHTTPServer):
 
 
 def main() -> None:
+    MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Deteccao de recuperacao: se alguma reuniao ficou travada em
+    # recording/processing, o processo anterior morreu sem finalizar. Marca
+    # como "interrupted" (sem apagar nada) para a pagina oferecer
+    # reprocessamento via /api/recovery + /api/meetings/<id>/resume.
+    recovered = mark_interrupted_sessions(MEETINGS_DIR)
+    for entry in recovered:
+        logger.warning(
+            "Sessao interrompida detectada: %s (%s) — %d/%d blocos transcritos.",
+            entry.get("meeting_id"),
+            entry.get("title"),
+            entry.get("chunks_transcribed", 0),
+            entry.get("chunk_count", 0),
+        )
+
     url = f"http://127.0.0.1:{PORT}"
     try:
+        # 127.0.0.1 explicito e proposital: o painel nunca deve ser exposto
+        # em 0.0.0.0/rede por padrao.
         server = SinglePortServer(("127.0.0.1", PORT), Handler)
     except OSError:
         print(f"Painel ja esta rodando em {url}. Abrindo o navegador nele em vez de subir outro.")
