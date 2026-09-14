@@ -10,14 +10,18 @@ tentar falar com essa API. Cada campo tem aqui uma funcao de validacao pura
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 MODEL_ALLOWLIST = {"tiny", "base", "small", "medium", "large-v3"}
 DEVICE_ALLOWLIST = {"cpu", "cuda"}
 MIN_CHUNK_SECONDS = 5
 MAX_CHUNK_SECONDS = 1800
+MIN_FREE_BYTES = 200 * 1024 * 1024  # 200 MB — abaixo disso, recusar iniciar a reuniao
 MAX_TITLE_LENGTH = 200
 MAX_OUTPUT_LENGTH = 200
 DEFAULT_OUTPUT_NAME = "transcricao.md"
@@ -131,3 +135,80 @@ def validate_meeting_id(value) -> str:
     if not isinstance(value, str) or not _MEETING_ID_RE.match(value):
         raise ValidationError("Identificador de reuniao invalido.")
     return value
+
+
+def validate_meetings_root_path(value) -> Path:
+    """Validacao pura (sem tocar disco) do texto de um caminho de pasta
+    escolhido pelo usuario -- confirma que e uma string nao vazia e resolve
+    para um Path absoluto. Diferente de `validate_output_filename`, aqui o
+    usuario ESCOLHE a raiz: nao ha "diretorio autorizado" pra confinar
+    contra, porque essa raiz e o proprio diretorio autorizado dali em
+    diante. A checagem de saude (existe/grava/tem espaco) e separada, em
+    `check_folder_health`, porque essa sim precisa tocar o disco.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("Escolha uma pasta valida.")
+    try:
+        path = Path(value).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValidationError(f"Caminho invalido: {exc}") from None
+    return path
+
+
+@dataclass
+class FolderHealth:
+    ok: bool
+    message: str
+    free_bytes: Optional[int] = None
+
+
+def check_folder_health(
+    path: Path,
+    min_free_bytes: int = MIN_FREE_BYTES,
+    write_probe: Optional[Callable[[Path], None]] = None,
+) -> FolderHealth:
+    """Checklist antes de habilitar gravar numa pasta (secao 8 da missao):
+    existe, e realmente uma pasta, tem espaco livre suficiente, e da pra
+    criar um arquivo nela de verdade (nao so checar permissao "no papel" --
+    ACLs do Windows sao traicoeiras o suficiente pra so confiar num teste
+    real de escrita).
+
+    `write_probe` existe so pra teste: por padrao escreve e apaga um
+    arquivo temporario de verdade dentro de `path`.
+    """
+    if not isinstance(path, Path):
+        return FolderHealth(False, "Caminho invalido.")
+    if not path.exists():
+        return FolderHealth(False, f"A pasta “{path}” nao existe.")
+    if not path.is_dir():
+        return FolderHealth(False, f"“{path}” nao e uma pasta.")
+
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError as exc:
+        return FolderHealth(False, f"Nao foi possivel verificar o espaco em disco: {exc}")
+
+    if usage.free < min_free_bytes:
+        free_mb = usage.free / (1024 * 1024)
+        return FolderHealth(
+            False,
+            f"Pouco espaco disponivel no disco (livre: {free_mb:.0f} MB). "
+            "Escolha outro local antes de iniciar a reuniao.",
+            usage.free,
+        )
+
+    probe = write_probe or _default_write_probe
+    try:
+        probe(path)
+    except OSError:
+        return FolderHealth(
+            False, f"Nao foi possivel escrever em “{path}”. Verifique as permissoes.", usage.free
+        )
+
+    return FolderHealth(True, "OK", usage.free)
+
+
+def _default_write_probe(path: Path) -> None:
+    probe_path = path / f".meeting_transcriber_write_test_{os.getpid()}.tmp"
+    probe_path.write_text("ok", encoding="utf-8")
+    probe_path.unlink()

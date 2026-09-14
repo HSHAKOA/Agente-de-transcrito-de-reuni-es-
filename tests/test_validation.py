@@ -4,10 +4,12 @@ import pytest
 
 from meeting_transcriber.validation import (
     ValidationError,
+    check_folder_health,
     validate_chunk_seconds,
     validate_device,
     validate_language,
     validate_meeting_id,
+    validate_meetings_root_path,
     validate_model,
     validate_output_filename,
     validate_title,
@@ -157,3 +159,70 @@ def test_validate_meeting_id_accepts_generated_format():
 def test_validate_meeting_id_rejects_invalid(value):
     with pytest.raises(ValidationError):
         validate_meeting_id(value)
+
+
+# -- meetings root path (pasta escolhida pelo usuario) -----------------------
+
+def test_validate_meetings_root_path_resolves_and_expands(tmp_path: Path):
+    result = validate_meetings_root_path(str(tmp_path))
+    assert result == tmp_path.resolve()
+
+
+@pytest.mark.parametrize("value", ["", "   ", None, 123, [], {}])
+def test_validate_meetings_root_path_rejects_empty_or_wrong_type(value):
+    with pytest.raises(ValidationError):
+        validate_meetings_root_path(value)
+
+
+def test_validate_meetings_root_path_does_not_require_existing_folder(tmp_path: Path):
+    # validacao pura so confere o formato do caminho -- existir/ser gravavel
+    # e responsabilidade de check_folder_health (que de fato toca o disco)
+    candidate = tmp_path / "ainda-nao-existe"
+    result = validate_meetings_root_path(str(candidate))
+    assert result == candidate.resolve()
+
+
+# -- check_folder_health ------------------------------------------------
+
+def test_check_folder_health_ok_for_healthy_writable_folder(tmp_path: Path):
+    health = check_folder_health(tmp_path)
+    assert health.ok is True
+    assert health.free_bytes is not None and health.free_bytes > 0
+
+
+def test_check_folder_health_rejects_missing_folder(tmp_path: Path):
+    health = check_folder_health(tmp_path / "nao-existe")
+    assert health.ok is False
+    assert "nao existe" in health.message.lower() or "não existe" in health.message.lower()
+
+
+def test_check_folder_health_rejects_path_that_is_a_file(tmp_path: Path):
+    file_path = tmp_path / "arquivo.txt"
+    file_path.write_text("x", encoding="utf-8")
+    health = check_folder_health(file_path)
+    assert health.ok is False
+
+
+def test_check_folder_health_rejects_low_disk_space(tmp_path: Path, monkeypatch):
+    import shutil as shutil_module
+
+    fake_usage = shutil_module.disk_usage(tmp_path)._replace(free=1024)  # 1 KB, bem abaixo do minimo
+    monkeypatch.setattr("meeting_transcriber.validation.shutil.disk_usage", lambda p: fake_usage)
+
+    health = check_folder_health(tmp_path)
+    assert health.ok is False
+    assert health.free_bytes == 1024
+
+
+def test_check_folder_health_rejects_when_write_probe_fails(tmp_path: Path):
+    def _boom(path):
+        raise OSError("permissao negada (simulado)")
+
+    health = check_folder_health(tmp_path, write_probe=_boom)
+    assert health.ok is False
+    assert health.free_bytes is not None  # ja tinha passado da checagem de espaco
+
+
+def test_check_folder_health_leaves_no_probe_file_behind(tmp_path: Path):
+    check_folder_health(tmp_path)
+    assert list(tmp_path.iterdir()) == []
