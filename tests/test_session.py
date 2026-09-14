@@ -91,6 +91,21 @@ def test_completed_downgrades_to_interrupted_when_chunk_failed(tmp_path: Path):
     assert session.state["status"] == STATUS_INTERRUPTED
 
 
+def test_completed_downgrades_to_interrupted_when_chunk_never_attempted(tmp_path: Path):
+    """Um chunk gravado mas nunca sequer tentado (ex.: --resume interrompido
+    antes de chegar nele) tambem precisa impedir "completed" -- nao so um
+    chunk que falhou explicitamente."""
+    session = MeetingSession.create(
+        base_dir=tmp_path, title="T", model="small", language="pt", device="cpu"
+    )
+    chunk_path = session.chunks_dir / "chunk_00000.wav"
+    chunk_path.write_bytes(b"x")
+    session.mark_chunk_recorded(0, chunk_path, 0.0, 30.0)  # nunca marcado transcrito nem falho
+
+    session.mark_completed()
+    assert session.state["status"] == STATUS_INTERRUPTED
+
+
 def test_mark_failed_sets_error_and_status(tmp_path: Path):
     session = MeetingSession.create(
         base_dir=tmp_path, title="T", model="small", language="pt", device="cpu"

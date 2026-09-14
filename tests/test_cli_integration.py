@@ -8,6 +8,7 @@ encaixam, nao so cada peca isolada.
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import threading
 from pathlib import Path
@@ -19,6 +20,7 @@ from meeting_transcriber.recorder import RecordedChunk
 from meeting_transcriber.session import (
     STATUS_COMPLETED,
     STATUS_FAILED,
+    STATUS_INTERRUPTED,
     MeetingSession,
 )
 from meeting_transcriber.transcriber import Segment
@@ -194,6 +196,54 @@ def test_resume_reprocesses_only_pending_chunks_and_appends(tmp_path, monkeypatc
     reloaded = MeetingSession.load(meeting_dir)
     assert reloaded.state["status"] == STATUS_COMPLETED
     assert reloaded.pending_chunks() == []
+
+
+def test_resume_stops_between_chunks_when_signaled(tmp_path, monkeypatch):
+    """Um sinal de parada gracioso durante --resume nao deve derrubar o
+    processo no meio de uma transcricao (KeyboardInterrupt cru) nem marcar a
+    sessao como "completed" com blocos que nunca foram tentados."""
+    stop_event_holder: dict = {}
+    real_make_handler = cli._make_shutdown_handler
+
+    def _spy_make_handler(stop_event, force_exit=os._exit):
+        stop_event_holder["event"] = stop_event
+        return real_make_handler(stop_event, force_exit)
+
+    monkeypatch.setattr(cli, "_make_shutdown_handler", _spy_make_handler)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a, **k: None)
+
+    class _StoppingTranscriber(_FakeTranscriber):
+        def transcribe_file(self, path, offset_seconds=0.0):
+            result = super().transcribe_file(path, offset_seconds)
+            stop_event_holder["event"].set()  # simula Ctrl+C chegando logo apos o 1o bloco
+            return result
+
+    monkeypatch.setattr(cli, "Transcriber", _StoppingTranscriber)
+
+    output_path = tmp_path / "saida.md"
+    meeting_dir = tmp_path / "data" / "meetings" / "reuniao-6"
+    session = MeetingSession.create(
+        base_dir=meeting_dir.parent,
+        title="Reuniao longa",
+        model="small",
+        language="pt",
+        device="cpu",
+        transcript_path=output_path,
+        meeting_id=meeting_dir.name,
+    )
+    for i in range(3):
+        chunk = session.chunks_dir / f"chunk_{i:05d}.wav"
+        chunk.write_bytes(b"fake")
+        session.mark_chunk_recorded(i, chunk, float(i * 30), 30.0)
+    output_path.write_text("# Reuniao longa\n\n## Transcricao\n\n", encoding="utf-8")
+
+    exit_code = cli.run_resume(meeting_dir)
+
+    assert exit_code == 0
+    reloaded = MeetingSession.load(meeting_dir)
+    assert reloaded.state["status"] == STATUS_INTERRUPTED  # blocos 1 e 2 nunca foram tentados
+    transcribed = {c["index"] for c in reloaded.state["chunks"] if c["status"] == "transcribed"}
+    assert transcribed == {0}
 
 
 def test_graceful_stop_event_flushes_partial_buffer_through_full_pipeline(tmp_path, monkeypatch):

@@ -241,8 +241,13 @@ class MeetingSession:
 
     def mark_completed(self) -> None:
         with self._lock:
-            still_failed = [c for c in self._state["chunks"] if c["status"] == CHUNK_FAILED]
-            self._state["status"] = STATUS_INTERRUPTED if still_failed else STATUS_COMPLETED
+            # qualquer chunk que nao seja "transcribed" ainda esta pendente
+            # -- seja porque falhou, seja porque nunca chegou a ser tentado
+            # (ex.: --resume interrompido no meio, antes de tentar todos).
+            # So checar CHUNK_FAILED deixaria esse segundo caso passar como
+            # "completed" incorretamente.
+            still_pending = [c for c in self._state["chunks"] if c["status"] != CHUNK_TRANSCRIBED]
+            self._state["status"] = STATUS_INTERRUPTED if still_pending else STATUS_COMPLETED
             self._state["finished_at"] = _now_iso()
             self._save_state()
 

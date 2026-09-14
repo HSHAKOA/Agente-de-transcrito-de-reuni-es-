@@ -145,12 +145,28 @@ def run_resume(meeting_dir: Path) -> int:
         session.mark_completed()
         return 0
 
+    # mesmo handler grato usado na gravacao: sem isso, um sinal de parada
+    # (Ctrl+C, ou o botao "Parar" do painel mandando CTRL_BREAK_EVENT/SIGINT)
+    # chegando durante um --resume cairia no comportamento padrao do Python
+    # (KeyboardInterrupt/encerramento abrupto) no meio de uma chamada
+    # bloqueante do Whisper, em vez de parar de forma limpa entre um bloco e
+    # outro. O bloco em andamento nesse instante so seria perdido da mesma
+    # forma (fica pendente pra proxima tentativa); nenhum ja transcrito e afetado.
+    stop_event = threading.Event()
+    _register_shutdown_signals(_make_shutdown_handler(stop_event))
+
     logger.info("Reprocessando %d bloco(s) pendente(s) de %s...", len(pending), meeting_dir)
     transcriber = Transcriber(model_size=model, device=device, language=language)
     writer = MarkdownWriter.open_existing(transcript_path)
 
     had_failure = False
     for record in pending:
+        if stop_event.is_set():
+            logger.warning(
+                "Reprocessamento interrompido pelo usuario; %d bloco(s) restante(s) continuam pendentes.",
+                len(pending) - pending.index(record),
+            )
+            break
         chunk_path = meeting_dir / record.path
         if not chunk_path.exists():
             logger.error("Audio do bloco %d nao encontrado em %s; nao ha o que reprocessar.", record.index, chunk_path)
