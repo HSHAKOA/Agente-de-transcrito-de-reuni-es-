@@ -113,6 +113,37 @@ def test_full_run_with_meeting_dir_marks_completed_and_writes_markdown(tmp_path,
     assert session.state["chunks_recorded"] == 3
 
 
+def test_run_refuses_to_record_over_meeting_dir_with_existing_chunks(tmp_path, monkeypatch):
+    """recording_worker sempre comeca em chunk_00000.wav; gravar de novo
+    numa pasta de sessao que ja tem blocos gravados sobrescreveria audio de
+    uma sessao anterior. run() precisa recusar isso, nao gravar por cima."""
+    monkeypatch.setattr(cli, "recording_worker", _fake_recording_worker_factory(1))
+    monkeypatch.setattr(cli, "Transcriber", _FakeTranscriber)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a, **k: None)
+
+    meeting_dir = tmp_path / "data" / "meetings" / "reuniao-existente"
+    old_session = MeetingSession.create(
+        base_dir=meeting_dir.parent,
+        title="Sessao antiga",
+        model="small",
+        language="pt",
+        device="cpu",
+        transcript_path=tmp_path / "antiga.md",
+        meeting_id=meeting_dir.name,
+    )
+    old_chunk = old_session.chunks_dir / "chunk_00000.wav"
+    old_chunk.write_bytes(b"audio original, nao pode ser sobrescrito")
+    old_session.mark_chunk_recorded(0, old_chunk, 0.0, 30.0)
+
+    args = _make_args(tmp_path, meeting_dir=meeting_dir)
+    exit_code = cli.run(args)
+
+    assert exit_code == 1
+    assert old_chunk.read_bytes() == b"audio original, nao pode ser sobrescrito"  # intocado
+    reloaded = MeetingSession.load(meeting_dir)
+    assert len(reloaded.state["chunks"]) == 1  # nao ganhou nem perdeu nenhum chunk
+
+
 def test_run_marks_session_failed_when_model_fails_to_load(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "recording_worker", _fake_recording_worker_factory(1))
     _FakeTranscriber.fail_on_load = True

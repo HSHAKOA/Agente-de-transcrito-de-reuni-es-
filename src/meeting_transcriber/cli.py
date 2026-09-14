@@ -210,8 +210,25 @@ def run(args: argparse.Namespace) -> int:
 
     session: Optional[MeetingSession] = None
     if args.meeting_dir is not None:
-        if (args.meeting_dir / "state.json").exists():
-            session = MeetingSession.load(args.meeting_dir)
+        state_path = args.meeting_dir / "state.json"
+        if state_path.exists():
+            existing = MeetingSession.load(args.meeting_dir)
+            if existing.state.get("chunks"):
+                # recording_worker sempre comeca a numerar em chunk_00000.wav;
+                # gravar de novo aqui sobrescreveria silenciosamente audio de
+                # uma sessao anterior que ja tem blocos registrados. --resume
+                # existe exatamente pra continuar uma sessao existente sem
+                # gravar nada novo -- gravar de novo exige uma pasta nova.
+                logger.error(
+                    "Pasta de sessao %s ja tem audio gravado (%d bloco(s)); gravar aqui de novo "
+                    "sobrescreveria esse audio. Use --resume %s para reprocessar, ou aponte "
+                    "--meeting-dir para uma pasta nova.",
+                    args.meeting_dir,
+                    len(existing.state["chunks"]),
+                    args.meeting_dir,
+                )
+                return 1
+            session = existing  # sessao "created" mas que nunca chegou a gravar nada -- seguro reusar
         else:
             session = MeetingSession.create(
                 base_dir=args.meeting_dir.parent,
