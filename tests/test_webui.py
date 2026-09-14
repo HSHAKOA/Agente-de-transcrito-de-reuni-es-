@@ -326,6 +326,48 @@ def test_get_recovery_lists_only_interrupted(_isolated_webui):
     assert titles == {"Presa"}
 
 
+# -- main(): ordem de deteccao de recuperacao --------------------------------
+
+def test_main_does_not_scan_recovery_when_port_already_taken(_isolated_webui, monkeypatch):
+    """Regressao: se outra instancia do painel ja estiver rodando (porta
+    ocupada -- cenario normal quando ha uma gravacao real em andamento),
+    main() NAO pode rodar mark_interrupted_sessions. Rodar antes de saber se
+    somos a unica instancia marcaria a sessao alheia, que esta perfeitamente
+    ativa, como "interrompida" so por estar em status recording/processing."""
+    monkeypatch.setattr(webui.webbrowser, "open", lambda url: None)
+    calls = []
+    monkeypatch.setattr(webui, "mark_interrupted_sessions", lambda base_dir: calls.append(base_dir) or [])
+
+    class _AlwaysBusyServer:
+        def __init__(self, *a, **k):
+            raise OSError("port in use (simulado)")
+
+    monkeypatch.setattr(webui, "SinglePortServer", _AlwaysBusyServer)
+
+    webui.main()
+
+    assert calls == []
+
+
+def test_main_scans_recovery_only_after_binding_port(_isolated_webui, monkeypatch):
+    monkeypatch.setattr(webui.webbrowser, "open", lambda url: None)
+    calls = []
+    monkeypatch.setattr(webui, "mark_interrupted_sessions", lambda base_dir: calls.append(base_dir) or [])
+
+    class _FakeServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def serve_forever(self):
+            pass  # nao bloqueia o teste
+
+    monkeypatch.setattr(webui, "SinglePortServer", _FakeServer)
+
+    webui.main()
+
+    assert calls == [webui.MEETINGS_DIR]
+
+
 # -- HTTP hardening (servidor real numa porta efemera) -----------------------
 
 @pytest.fixture

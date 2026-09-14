@@ -353,6 +353,7 @@ def get_status() -> dict:
             "running": running,
             "output": output,
             "chunk_seconds": chunk_seconds,
+            "meeting_dir": state["meeting_dir"],
             "started_at": started_at,
             "finished_at": state["finished_at"],
             "exit_code": state["exit_code"],
@@ -525,10 +526,28 @@ class SinglePortServer(ThreadingHTTPServer):
 def main() -> None:
     MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Deteccao de recuperacao: se alguma reuniao ficou travada em
-    # recording/processing, o processo anterior morreu sem finalizar. Marca
-    # como "interrupted" (sem apagar nada) para a pagina oferecer
-    # reprocessamento via /api/recovery + /api/meetings/<id>/resume.
+    url = f"http://127.0.0.1:{PORT}"
+    try:
+        # 127.0.0.1 explicito e proposital: o painel nunca deve ser exposto
+        # em 0.0.0.0/rede por padrao.
+        server = SinglePortServer(("127.0.0.1", PORT), Handler)
+    except OSError:
+        # Ja existe um painel rodando (porta ocupada) -- CRUCIAL rodar a
+        # deteccao de recuperacao so DEPOIS de confirmar que somos a unica
+        # instancia. Se rodasse antes desta checagem, subir um segundo
+        # `webui.py` enquanto o primeiro tem uma gravacao de verdade em
+        # andamento marcaria essa sessao ativa como "interrupted" so por
+        # estar em status "recording" -- que e exatamente o estado normal
+        # de uma sessao que nao tem nada de errado.
+        print(f"Painel ja esta rodando em {url}. Abrindo o navegador nele em vez de subir outro.")
+        webbrowser.open(url)
+        return
+
+    # Deteccao de recuperacao: so roda aqui, com a porta garantidamente
+    # nossa -- ou seja, nenhum outro processo deste painel pode estar com
+    # uma sessao de verdade em andamento neste exato momento. Qualquer
+    # reuniao ainda travada em recording/processing so pode ser sobra de um
+    # processo anterior que morreu sem finalizar.
     recovered = mark_interrupted_sessions(MEETINGS_DIR)
     for entry in recovered:
         logger.warning(
@@ -538,16 +557,6 @@ def main() -> None:
             entry.get("chunks_transcribed", 0),
             entry.get("chunk_count", 0),
         )
-
-    url = f"http://127.0.0.1:{PORT}"
-    try:
-        # 127.0.0.1 explicito e proposital: o painel nunca deve ser exposto
-        # em 0.0.0.0/rede por padrao.
-        server = SinglePortServer(("127.0.0.1", PORT), Handler)
-    except OSError:
-        print(f"Painel ja esta rodando em {url}. Abrindo o navegador nele em vez de subir outro.")
-        webbrowser.open(url)
-        return
 
     print(f"Painel disponivel em {url} (Ctrl+C aqui encerra o servidor, nao a gravacao).")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
