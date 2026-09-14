@@ -126,15 +126,23 @@ sao descobertos automaticamente por essa tela.
 ## Validacao de entrada (webui.py)
 
 Todo campo vindo do `/api/start` passa por `meeting_transcriber.validation`
-antes de virar argumento de linha de comando do subprocesso: `model`/`device`
-sao allowlist, `chunk_seconds` tem faixa (5-1800), `title` tem tamanho
-maximo, e `output` so aceita um NOME de arquivo (sem `/`, `\`, `..`), sempre
-confinado (via `Path.resolve()`) dentro da raiz do projeto. Ver
-`docs/SECURITY.md` para o raciocinio completo.
+antes de virar argumento de linha de comando do subprocesso: `model`/
+`device` sao allowlist, `chunk_seconds` tem faixa (5-1800), `title` tem
+tamanho maximo. Nao ha mais campo `output` no contrato — ver "Fim do campo
+output" acima. Ver `docs/SECURITY.md` para o raciocinio completo.
+
+## Frontend (preview arquitetural, Fase F)
+
+`frontend/` contem um projeto Vite + React + TypeScript + Tailwind CSS,
+com tipos e um cliente HTTP (`src/types/api.ts`, `src/services/api.ts`)
+que espelham o contrato real das rotas acima. **Nao e o frontend ativo**:
+`index.html`/`webui.py` continuam sendo a interface do produto ate a
+migracao completar as etapas de paridade funcional (Fase F do roadmap,
+depois de C/D/E). Ver `frontend/README.md`.
 
 ## O que NAO mudou nesta fase
 
 Captura de audio continua so o loopback do sistema (sem microfone/mixer —
 isso e Fase C). Nao ha SQLite, historico de reunioes navegavel, resumo/
-tarefas/decisoes, nem diarizacao — essas sao as fases D em diante do
+tarefas/decisoes, nem diarizacao — essas sao as fases E em diante do
 roadmap. Ver `docs/AUDITORIA_V2.md` e `docs/ROADMAP.md`.
