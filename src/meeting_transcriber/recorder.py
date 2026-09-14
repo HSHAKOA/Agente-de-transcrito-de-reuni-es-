@@ -16,7 +16,7 @@ import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 import soundfile as sf
@@ -68,11 +68,20 @@ def recording_worker(
     stop_event: threading.Event,
     out_queue: "queue.Queue[Optional[RecordedChunk]]",
     samplerate: int = SAMPLE_RATE,
+    mic_factory: Callable[[], "sc.Microphone"] = get_loopback_microphone,  # noqa: F821
+    on_chunk_recorded: Optional[Callable[[RecordedChunk], None]] = None,
 ) -> None:
     """Grava continuamente ate `stop_event` ser sinalizado, colocando cada
     `RecordedChunk` concluido em `out_queue`. Ao final (inclusive o ultimo
     bloco parcial), coloca `None` na fila para avisar o consumidor que a
     gravacao acabou.
+
+    `mic_factory` e `on_chunk_recorded` existem para permitir testar toda a
+    logica de particionamento em blocos (buffer parcial, sequencia, sinal de
+    fim) com um microfone falso, sem precisar de placa de som real. Quem
+    chama pode usar `on_chunk_recorded` pra espelhar cada bloco gravado em
+    algum lugar durável (ex.: `session.MeetingSession.mark_chunk_recorded`)
+    sem que este modulo precise saber nada sobre sessao/persistencia.
 
     Deve rodar em sua propria thread: o loop de leitura do microfone nao
     pode ficar bloqueado esperando a transcricao terminar.
@@ -81,13 +90,27 @@ def recording_worker(
     block_frames = max(1, int(BLOCK_SECONDS * samplerate))  # frames por leitura (0.5s)
     chunk_frames = int(chunk_seconds * samplerate)  # frames necessarios pra fechar 1 bloco completo
 
-    mic = get_loopback_microphone()
     buffer: List[np.ndarray] = []  # pedacinhos de 0.5s acumulados ate formar um bloco inteiro
     buffered_frames = 0
     chunk_index = 0
     cumulative_seconds = 0.0  # posicao (em segundos) do inicio do proximo bloco na gravacao inteira
 
+    def _emit(chunk: RecordedChunk) -> None:
+        out_queue.put(chunk)
+        if on_chunk_recorded is not None:
+            try:
+                on_chunk_recorded(chunk)
+            except Exception:  # notificacao de progresso nao pode derrubar a gravacao
+                logger.exception("Falha ao notificar chunk %d gravado", chunk.index)
+
     try:
+        # mic_factory() (abrir o dispositivo de audio) tem que estar DENTRO
+        # deste try: se o dispositivo nao existir/nao abrir (ex.: nenhum
+        # loopback disponivel), a excecao precisa passar pelo `finally` que
+        # poe o sentinela `None` na fila. Sem isso, cli.py fica bloqueado
+        # para sempre em `chunk_queue.get()` -- nem o shutdown gracioso
+        # consegue desbloquear um `queue.Queue.get()` sem sentinela.
+        mic = mic_factory()
         # abre o stream de gravacao uma unica vez e le em pedacos pequenos
         # (BLOCK_SECONDS) pra continuar respondendo rapido ao Ctrl+C mesmo
         # com chunk_seconds grande (ex.: 300s = 5min).
@@ -108,17 +131,17 @@ def recording_worker(
                     cumulative_seconds += chunk.duration_seconds
                     chunk_index += 1
                     buffer, buffered_frames = [], 0
-                    out_queue.put(chunk)
+                    _emit(chunk)
 
-        # Ctrl+C interrompeu o loop: ainda sobra um bloco parcial (menor que
-        # chunk_seconds) no buffer — grava e transcreve ele tambem, senao
-        # os ultimos segundos da reuniao seriam perdidos.
+        # Ctrl+C/parada graciosa interrompeu o loop: ainda sobra um bloco
+        # parcial (menor que chunk_seconds) no buffer — grava e transcreve
+        # ele tambem, senao os ultimos segundos da reuniao seriam perdidos.
         if buffer:
             chunk = write_chunk(buffer, session_dir, chunk_index, cumulative_seconds, samplerate)
             logger.info(
                 "Bloco final %d gravado (%.1fs) -> %s", chunk_index, chunk.duration_seconds, chunk.path
             )
-            out_queue.put(chunk)
+            _emit(chunk)
     finally:
         # sinal de "acabou" pra thread consumidora parar de esperar por mais blocos
         out_queue.put(None)
