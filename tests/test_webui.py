@@ -495,6 +495,34 @@ def test_main_does_not_scan_recovery_when_port_already_taken(_isolated_webui, mo
     assert calls == []
 
 
+def test_main_falls_back_to_default_root_when_configured_root_unusable(_isolated_webui, monkeypatch, tmp_path):
+    """settings.json pode apontar pra uma pasta que nao existe mais (disco
+    externo desconectado, permissao mudou, projeto movido de maquina) --
+    main() nao pode travar o painel inteiro por causa disso."""
+    unusable = tmp_path / "arquivo-no-lugar-de-pasta"
+    unusable.write_text("x", encoding="utf-8")  # mkdir() aqui sempre falha (ja existe como arquivo)
+    webui.MEETINGS_DIR = unusable
+
+    fallback = tmp_path / "PadraoDeFallback"
+    monkeypatch.setattr(webui.settings, "default_meetings_root", lambda: fallback)
+    monkeypatch.setattr(webui.webbrowser, "open", lambda url: None)
+    monkeypatch.setattr(webui, "mark_interrupted_sessions", lambda base_dir: [])
+
+    class _FakeServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(webui, "SinglePortServer", _FakeServer)
+
+    webui.main()  # nao pode levantar excecao
+
+    assert webui.MEETINGS_DIR == fallback
+    assert fallback.exists()
+
+
 def test_main_scans_recovery_only_after_binding_port(_isolated_webui, monkeypatch):
     monkeypatch.setattr(webui.webbrowser, "open", lambda url: None)
     calls = []

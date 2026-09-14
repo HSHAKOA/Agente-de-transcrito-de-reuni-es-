@@ -658,7 +658,26 @@ class SinglePortServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+    global MEETINGS_DIR
+    try:
+        MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A raiz vem de settings.json e pode apontar pra algo que nao existe
+        # mais (disco externo desconectado, permissao mudou, projeto movido
+        # de maquina) -- cair de volta pro padrao aqui em vez de deixar o
+        # painel inteiro travar na inicializacao por causa disso. Nao
+        # sobrescreve settings.json sozinho: se o usuario reconectar o
+        # disco, a escolha original continua la para escolher de novo.
+        logger.warning(
+            "Nao foi possivel usar a pasta de reunioes configurada (%s): %s. "
+            "Usando o padrao ate uma nova pasta ser escolhida.",
+            MEETINGS_DIR, exc,
+        )
+        MEETINGS_DIR = settings.default_meetings_root()
+        try:
+            MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # se ate o padrao falhar, start_transcriber vai recusar com uma mensagem clara
 
     url = f"http://127.0.0.1:{PORT}"
     try:
