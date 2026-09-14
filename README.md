@@ -138,7 +138,9 @@ python -m meeting_transcriber --output reuniao-2026-08-12.md --model small --lan
 
 Deixe rodando durante a reuniao. Para encerrar, pressione `Ctrl+C` — a
 gravacao para, os blocos pendentes terminam de ser transcritos, e o `.md`
-e finalizado automaticamente.
+e finalizado automaticamente. O botao "Parar" do painel faz o mesmo
+shutdown gracioso (sinaliza o processo, espera ele finalizar sozinho, e so
+usa encerramento forcado como ultimo recurso se ele nao responder).
 
 ### Opcoes principais
 
@@ -152,11 +154,14 @@ e finalizado automaticamente.
 | `--chunk-seconds` | `300` | Duracao de cada bloco de gravacao/transcricao, em segundos |
 | `--no-keep-audio` | desligado | Por padrao os `.wav` de cada bloco ficam salvos (rede de seguranca para reprocessar manualmente um bloco que falhou); esta opcao apaga cada bloco logo apos transcrever com sucesso |
 | `--work-dir` | pasta temporaria | Onde salvar os blocos de audio |
+| `--meeting-dir` | nenhum | Pasta de sessao persistente (`data/meetings/<id>`) onde o progresso e salvo em `state.json`, permitindo detectar e recuperar a sessao se o processo for interrompido. O painel (`webui.py`) sempre usa isso; pelo terminal e opcional. Ver `docs/RECOVERY.md` |
+| `--resume MEETING_DIR` | nenhum | Nao grava audio novo: so reprocessa os blocos pendentes/com falha de uma sessao existente e finaliza |
 
 Se a transcricao de algum bloco falhar (ex.: modelo travou, chunk corrompido),
 a sessao **nao para**: o erro fica registrado no `.md` e o `.wav` daquele
 bloco e preservado (mesmo com `--no-keep-audio`) para voce reprocessar
-manualmente depois.
+manualmente depois (ou, se a sessao usou `--meeting-dir`, com
+`--resume`, automaticamente).
 
 ### Escolhendo o modelo
 
@@ -185,6 +190,14 @@ gravacao em tempo real, tente `base` ou `tiny`. Com GPU (`--device cuda`),
 *Duracao total gravada: 01:32:47*
 ```
 
+## Sessoes e recuperacao
+
+Toda reuniao iniciada pelo painel ganha uma pasta em
+`data/meetings/<id>/` com o audio de cada bloco (`chunks/`) e o estado da
+sessao (`metadata.json`/`state.json`). Se o processo cair no meio (queda de
+energia, crash), o painel detecta isso sozinho na proxima vez que abrir e
+oferece "Reprocessar" — sem apagar nada. Detalhes em `docs/RECOVERY.md`.
+
 ## Estrutura do projeto
 
 ```
@@ -193,21 +206,26 @@ src/meeting_transcriber/
   recorder.py          # thread de gravacao: fatia o audio em blocos e enfileira
   transcriber.py        # carrega o Whisper e transcreve cada bloco (.wav -> texto)
   markdown_writer.py    # escreve o .md incrementalmente (cabecalho, blocos, rodape)
-  cli.py                 # ponto de entrada `python -m meeting_transcriber`,
-                          # junta gravacao + transcricao + escrita num loop so
-  __main__.py            # so chama cli.main()
+  session.py             # modelo de sessao persistente (data/meetings/<id>/, recuperacao)
+  validation.py           # validacao das entradas vindas da API do painel
+  cli.py                   # ponto de entrada `python -m meeting_transcriber`,
+                            # junta gravacao + transcricao + escrita num loop so
+  __main__.py              # so chama cli.main()
 webui.py                 # servidor local (stdlib) que liga/desliga o cli.py
                           # como subprocesso e serve o painel
 index.html                # interface do painel (sem framework, so fetch())
 iniciar.bat               # launcher de um clique: venv + deps + abre o painel
 tests/                     # testes da logica pura (sem precisar de microfone real)
+docs/                       # auditoria, arquitetura, recuperacao, seguranca, roadmap
 ```
 
 ## Rodando os testes
 
-Os testes cobrem a logica pura (formatacao do markdown, gravacao dos
-blocos WAV a partir de audio sintetico) — nao exigem microfone nem placa de
-som real:
+Os testes cobrem a logica pura (formatacao do markdown, particionamento de
+audio em blocos com microfone falso, sessao/recuperacao, validacao da API,
+hardening HTTP do painel, e o loop principal de ponta a ponta com Whisper
+falso) — nao exigem microfone nem placa de som real, nem baixar nenhum
+modelo:
 
 ```bash
 pip install pytest
