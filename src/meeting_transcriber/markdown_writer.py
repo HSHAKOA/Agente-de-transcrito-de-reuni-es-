@@ -28,6 +28,16 @@ class MarkdownWriter:
         self.path = path
         self._write_header(title, model_size, language)  # cria o arquivo com o cabecalho ja na hora que a sessao comeca
 
+    @classmethod
+    def open_existing(cls, path: Path) -> "MarkdownWriter":
+        """Reabre um .md ja existente para continuar anexando segmentos, sem
+        reescrever o cabecalho nem apagar o que ja foi transcrito antes.
+        Usado no modo `--resume`, que reprocessa apenas os blocos pendentes
+        de uma sessao interrompida."""
+        writer = cls.__new__(cls)
+        writer.path = path
+        return writer
+
     def _write_header(self, title: str, model_size: str, language: Optional[str]) -> None:
         started = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         header = (
