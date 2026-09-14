@@ -19,3 +19,11 @@ meeting-transcriber = "meeting_transcriber.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Sem isso, "pytest" (como o README manda rodar) falha com
+# "ModuleNotFoundError: No module named 'meeting_transcriber'" a menos que o
+# pacote esteja instalado (pip install -e .) ou PYTHONPATH=src seja setado
+# manualmente -- confirmado rodando a suite antes desta mudanca.
+pythonpath = ["src", "."]
+testpaths = ["tests"]
