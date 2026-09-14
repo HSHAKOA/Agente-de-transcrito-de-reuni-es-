@@ -85,12 +85,37 @@
   .save-dot.saved{background:var(--ok);animation:saveflash 1.6s ease-out}
   @keyframes saveflash{0%{box-shadow:0 0 0 0 rgba(47,184,110,.55)}100%{box-shadow:0 0 0 10px rgba(47,184,110,0)}}
   footer{color:var(--muted);font-size:.75rem;text-align:center;margin-top:24px}
+
+  .recovery-card{border-color:#5a4a1f;background:#1d1a10}
+  .recovery-title{font-weight:700;margin-bottom:10px;color:#e8c766}
+  .recovery-item{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 0;border-top:1px solid var(--line);flex-wrap:wrap;
+  }
+  .recovery-item:first-of-type{border-top:none}
+  .recovery-info{font-size:.82rem;color:var(--text)}
+  .recovery-info .muted{color:var(--muted);display:block;font-size:.74rem;margin-top:2px}
+  .btn-small{
+    border:none;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:700;
+    cursor:pointer;color:#fff;background:var(--accent);
+  }
+  .btn-small:hover{filter:brightness(1.08)}
+  .btn-small:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>🎙️ Agente de Transcrição de Reuniões</h1>
   <p class="sub">Grava o áudio de saída do computador e transcreve com Whisper local. Deixe rodando durante a reunião.</p>
+
+  <div class="card recovery-card" id="recoveryCard" style="display:none">
+    <div class="recovery-title">⚠️ Sessões interrompidas encontradas</div>
+    <p class="hint" style="margin:0 0 4px">
+      O processo foi encerrado antes de terminar de transcrever. O áudio gravado
+      continua salvo — clique em "Reprocessar" para completar a transcrição.
+    </p>
+    <div id="recoveryList"></div>
+  </div>
 
   <div class="card">
     <div class="row">
@@ -191,8 +216,72 @@ const logEl = $("log"), msgEl = $("msg");
 const fileCard = $("fileCard"), filePath = $("filePath");
 const progressRow = $("progressRow"), progressFill = $("progressFill"), progressText = $("progressText");
 const saveDot = $("saveDot"), saveText = $("saveText");
+const recoveryCard = $("recoveryCard"), recoveryList = $("recoveryList");
 let lastLogLength = -1;
 let lastSavedAt = null;
+
+// sessoes que ja tiveram "Reprocessar" clicado nesta pagina, pra nao deixar
+// clicar de novo enquanto o reprocessamento roda (ele usa o mesmo processo
+// unico do painel, entao so um por vez de qualquer forma)
+const resumingIds = new Set();
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function refreshRecovery() {
+  try {
+    const res = await fetch("/api/recovery");
+    const data = await res.json();
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) {
+      recoveryCard.style.display = "none";
+      return;
+    }
+    recoveryCard.style.display = "";
+    recoveryList.innerHTML = sessions
+      .map((s) => {
+        const id = s.meeting_id;
+        const busy = resumingIds.has(id);
+        return `
+          <div class="recovery-item">
+            <div class="recovery-info">
+              ${escapeHtml(s.title || "Reunião sem título")}
+              <span class="muted">${s.chunks_transcribed || 0}/${s.chunk_count || 0} blocos transcritos</span>
+            </div>
+            <button class="btn-small" data-resume-id="${escapeHtml(id)}" ${busy ? "disabled" : ""}>
+              ${busy ? "Reprocessando..." : "Reprocessar"}
+            </button>
+          </div>`;
+      })
+      .join("");
+  } catch (e) {
+    // silencioso: a lista de recuperacao e um extra, nao pode quebrar o resto do painel
+  }
+}
+
+recoveryList.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-resume-id]");
+  if (!btn || btn.disabled) return;
+  const id = btn.dataset.resumeId;
+  resumingIds.add(id);
+  btn.disabled = true;
+  btn.textContent = "Reprocessando...";
+  try {
+    const res = await fetch(`/api/meetings/${encodeURIComponent(id)}/resume`, { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      msgEl.textContent = data.message;
+      msgEl.className = "msg error";
+      resumingIds.delete(id);
+    }
+  } catch (e) {
+    resumingIds.delete(id);
+  }
+  refreshStatus();
+});
 
 // segundos -> "1m30s" ou "45s", pra barra de progresso do bloco atual
 function formatClock(seconds) {
@@ -289,7 +378,9 @@ stopBtn.addEventListener("click", async () => {
 });
 
 refreshStatus();
+refreshRecovery();
 setInterval(refreshStatus, 1500);
+setInterval(refreshRecovery, 5000);
 </script>
 </body>
 </html>
