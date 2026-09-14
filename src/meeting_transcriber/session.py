@@ -46,12 +46,54 @@ CHUNK_FAILED = "failed"
 
 _MEETING_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
 
+# caracteres proibidos em nomes de arquivo/pasta no Windows (o SO mais
+# restritivo dos tres suportados) — filtrar por esses cobre POSIX de graca.
+_INVALID_FOLDER_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
-def new_meeting_id() -> str:
-    """Id ordenavel por data e unico o suficiente (timestamp + sufixo
-    aleatorio), seguro para usar como nome de pasta em qualquer SO."""
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+def sanitize_title_for_folder(title: str, max_length: int = 50) -> str:
+    """Transforma um titulo de reuniao (texto livre, digitado pelo usuario)
+    num pedaco de nome de pasta seguro: remove caracteres invalidos no
+    Windows, troca espacos por hifen, tira pontos/espacos/hifens das pontas
+    (o Windows rejeita nomes terminados em ponto ou espaco), e evita nomes
+    reservados do SO. Nunca devolve vazio."""
+    if not isinstance(title, str):
+        title = ""
+    cleaned = _INVALID_FOLDER_CHARS_RE.sub("", title).strip()
+    cleaned = re.sub(r"\s+", "-", cleaned)
+    cleaned = cleaned.strip(". -")
+    cleaned = cleaned[:max_length].strip(". -")
+    if not cleaned or cleaned.upper() in _WINDOWS_RESERVED_NAMES:
+        cleaned = "Reuniao"
+    return cleaned
+
+
+def new_meeting_id(title: Optional[str] = None) -> str:
+    """Id unico o suficiente (timestamp + sufixo aleatorio) e seguro pra
+    usar como nome de pasta em qualquer SO.
+
+    Sem `title`: mantem o formato compacto/opaco original
+    (`AAAAMMDD-HHMMSS-xxxxxx`), usado por --resume e por quem so precisa de
+    um identificador (sem se importar com legibilidade no Explorador de
+    Arquivos). Com `title`: produz um nome de pasta legivel
+    (`AAAA-MM-DD_HHMM_Titulo-Sanitizado_xxxxxx`) -- e o que o painel usa,
+    ja que o usuario agora escolhe a pasta-raiz e navega essas pastas
+    diretamente no SO. Em ambos os casos, o sufixo aleatorio de 6 hex
+    garante unicidade mesmo com o mesmo titulo no mesmo minuto; e o
+    resultado so contem [0-9A-Za-z_-], entao sempre bate com
+    `is_valid_meeting_id`.
+    """
     suffix = secrets.token_hex(3)
+    if title:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        safe_title = sanitize_title_for_folder(title)
+        return f"{stamp}_{safe_title}_{suffix}"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{suffix}"
 
 
@@ -129,6 +171,8 @@ class MeetingSession:
         device: str,
         transcript_path: Optional[Path] = None,
         meeting_id: Optional[str] = None,
+        system_audio_device: Optional[str] = None,
+        microphone_device: Optional[str] = None,
     ) -> "MeetingSession":
         meeting_id = meeting_id or new_meeting_id()
         meeting_dir = base_dir / meeting_id
@@ -145,6 +189,16 @@ class MeetingSession:
             "device": device,
             "created_at": created_at,
             "transcript_path": str(transcript_path) if transcript_path else None,
+            # raiz escolhida pelo usuario e pasta desta reuniao especifica --
+            # gravados aqui pra "Abrir pasta" e pra tela de Arquivos nao
+            # dependerem de reconstruir o caminho a partir de outra fonte.
+            "root_directory": str(base_dir.resolve()),
+            "meeting_directory": str(meeting_dir.resolve()),
+            # ainda nao usados (captura hoje e so loopback do sistema) --
+            # reservados pra Fase C (microfone + selecao de dispositivo),
+            # ja no formato final pra nao exigir migracao de schema depois.
+            "system_audio_device": system_audio_device,
+            "microphone_device": microphone_device,
         }
         _atomic_write_json(session.metadata_path, session._metadata)
 

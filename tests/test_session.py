@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from meeting_transcriber.session import (
     CHUNK_FAILED,
     CHUNK_TRANSCRIBED,
@@ -14,6 +16,7 @@ from meeting_transcriber.session import (
     list_sessions,
     mark_interrupted_sessions,
     new_meeting_id,
+    sanitize_title_for_folder,
 )
 
 
@@ -29,6 +32,65 @@ def test_is_valid_meeting_id_rejects_path_traversal():
     assert not is_valid_meeting_id("a/b")
     assert not is_valid_meeting_id("")
     assert not is_valid_meeting_id(None)
+
+
+# -- nome de pasta legivel a partir do titulo --------------------------
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Reuniao Projeto ERP", "Reuniao-Projeto-ERP"),
+        ("  espacos   nas   pontas  ", "espacos-nas-pontas"),
+        ('Titulo com < > : " / \\ | ? *', "Titulo-com"),
+    ],
+)
+def test_sanitize_title_for_folder_basic_cases(title, expected):
+    assert sanitize_title_for_folder(title) == expected
+
+
+@pytest.mark.parametrize("reserved", ["CON", "con", "NUL", "COM1", "lpt1"])
+def test_sanitize_title_for_folder_avoids_windows_reserved_names(reserved):
+    assert sanitize_title_for_folder(reserved) == "Reuniao"
+
+
+def test_sanitize_title_for_folder_never_empty():
+    assert sanitize_title_for_folder("") == "Reuniao"
+    assert sanitize_title_for_folder("...") == "Reuniao"
+    assert sanitize_title_for_folder("///") == "Reuniao"
+    assert sanitize_title_for_folder(None) == "Reuniao"  # tipo inesperado tambem nao quebra
+
+
+def test_sanitize_title_for_folder_truncates_long_titles():
+    result = sanitize_title_for_folder("x" * 200, max_length=50)
+    assert len(result) <= 50
+
+
+def test_sanitize_title_for_folder_strips_trailing_dot_and_space():
+    # Windows rejeita nomes de pasta terminados em ponto ou espaco
+    assert not sanitize_title_for_folder("Titulo.").endswith(".")
+    assert not sanitize_title_for_folder("Titulo ").endswith(" ")
+
+
+def test_new_meeting_id_without_title_keeps_old_compact_format():
+    meeting_id = new_meeting_id()
+    assert is_valid_meeting_id(meeting_id)
+    assert "_" not in meeting_id  # formato antigo: so digitos e hifens
+
+
+def test_new_meeting_id_with_title_is_human_readable_and_valid():
+    meeting_id = new_meeting_id(title="Reuniao com Cliente X")
+    assert is_valid_meeting_id(meeting_id)
+    assert "Reuniao-com-Cliente-X" in meeting_id
+
+
+def test_new_meeting_id_with_title_never_exceeds_regex_length_limit():
+    meeting_id = new_meeting_id(title="x" * 300)
+    assert is_valid_meeting_id(meeting_id)  # regex ja garante <= 80, so confirma que nao estoura
+
+
+def test_new_meeting_id_with_same_title_is_still_unique():
+    ids = {new_meeting_id(title="Reuniao Recorrente") for _ in range(20)}
+    assert len(ids) == 20
 
 
 def test_create_writes_metadata_and_state(tmp_path: Path):
@@ -47,6 +109,10 @@ def test_create_writes_metadata_and_state(tmp_path: Path):
     assert session.state_path.exists()
     assert session.state["status"] == STATUS_CREATED
     assert session.metadata["title"] == "Reuniao de teste"
+    assert session.metadata["root_directory"] == str(tmp_path.resolve())
+    assert session.metadata["meeting_directory"] == str(session.meeting_dir.resolve())
+    assert session.metadata["system_audio_device"] is None
+    assert session.metadata["microphone_device"] is None
 
 
 def test_full_lifecycle_marks_completed(tmp_path: Path):
