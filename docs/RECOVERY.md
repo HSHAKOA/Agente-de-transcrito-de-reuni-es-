@@ -11,12 +11,17 @@ em `%TEMP%` — o app nunca sabia que aquela reuniao existiu.
 
 ## Como funciona agora
 
-Toda reuniao iniciada pelo painel (`webui.py`) ganha uma pasta persistente:
+Toda reuniao iniciada pelo painel (`webui.py`) ganha uma pasta persistente,
+dentro da raiz que o usuario escolheu (botao "Escolher pasta" — ver
+`docs/ARCHITECTURE.md`, secao "Pasta de reunioes"; padrao antes da primeira
+escolha: `Documentos/Reunioes`):
 
 ```
-data/meetings/<meeting_id>/
-    metadata.json   # titulo, modelo, idioma, device, caminho do .md (fixo)
+<raiz escolhida>/2026-09-14_1900_Reuniao-Projeto-ERP_ab12ef/
+    metadata.json   # titulo, modelo, idioma, device, root_directory,
+                     # meeting_directory, caminho do .md (fixo)
     state.json      # status atual + lista de chunks (muda a cada evento)
+    transcript.md   # a transcricao
     chunks/         # os .wav de cada bloco gravado
 ```
 
@@ -40,14 +45,22 @@ failed       -> erro que impediu a sessao de rodar (ex.: modelo Whisper nao
 
 ### Deteccao automatica na inicializacao
 
-Toda vez que `webui.py` sobe, `mark_interrupted_sessions` varre
-`data/meetings/*/state.json`. Qualquer sessao ainda em `recording` ou
-`processing` significa que o processo anterior morreu sem chegar a marcar um
-estado final — e automaticamente rebaixada para `interrupted` **sem apagar
-nenhum arquivo**. Isso e seguro rodar sempre no startup porque uma sessao
-que esta genuinamente ativa nunca teria esse estado "preso": ela so existe
-enquanto o processo que a criou esta vivo (e so um processo por vez, ver
-`SinglePortServer`).
+Toda vez que `webui.py` sobe (e so depois de confirmar que a porta foi
+vinculada com sucesso -- rodar isso antes marcaria erroneamente uma sessao
+de OUTRA instancia do painel, ainda ativa, como interrompida), `mark_
+interrupted_sessions` varre `<raiz atual>/*/state.json`. Qualquer sessao
+ainda em `recording` ou `processing` significa que o processo anterior
+morreu sem chegar a marcar um estado final — e automaticamente rebaixada
+para `interrupted` **sem apagar nenhum arquivo**. Isso e seguro rodar
+sempre no startup porque uma sessao que esta genuinamente ativa nunca teria
+esse estado "preso": ela so existe enquanto o processo que a criou esta
+vivo (e so um processo por vez, ver `SinglePortServer`).
+
+**Limitacao:** a varredura so olha a raiz ATUALMENTE configurada. Se o
+usuario trocar de pasta (botao "Escolher pasta"), reunioes deixadas para
+tras na raiz anterior nao aparecem no banner de recuperacao ate a raiz ser
+trocada de volta — os arquivos continuam intactos em disco, so nao sao
+descobertos automaticamente por essa tela enquanto a raiz ativa for outra.
 
 ### Reprocessamento
 

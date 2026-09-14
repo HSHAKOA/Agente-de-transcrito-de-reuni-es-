@@ -12,22 +12,44 @@ e o cenario que a validacao de entrada e os headers abaixo mitigam.
 
 ## O que foi corrigido na Fase B
 
-### 1. Escrita de arquivo arbitraria (path traversal) — corrigido
+### 1. Escrita de arquivo arbitraria (path traversal) — corrigido (e depois eliminado)
 
-Antes: o campo `output` do `/api/start` ia direto pra `--output <valor>` do
+Fase B: o campo `output` do `/api/start` ia direto pra `--output <valor>` do
 subprocesso, sem nenhuma checagem. Um payload como
 `{"output": "../../../../Windows/System32/drivers/etc/hosts"}` seria escrito
-literalmente.
+literalmente. Corrigido entao com `validate_output_filename`, que rejeita
+qualquer valor com `/`, `\`, `..`, ponto inicial, ou nome reservado do
+Windows (`CON`, `NUL`, `COM1`, etc.), confirmando o resultado com
+`Path.resolve()` como defesa em profundidade.
 
-Agora: `meeting_transcriber.validation.validate_output_filename` rejeita
-qualquer valor que contenha `/`, `\`, `..`, comece com `.`, ou corresponda a
-um nome reservado do Windows (`CON`, `NUL`, `COM1`, etc.) — so um nome de
-arquivo simples e aceito. O resultado ainda passa por `Path.resolve()` e uma
-segunda checagem confirma que o caminho final continua sendo filho direto do
-diretorio autorizado (defesa em profundidade, mesmo que a checagem de string
-tenha algum caso nao previsto). Testado adversarialmente em
-`tests/test_validation.py` e `tests/test_webui.py` com `../../arquivo.md`,
-`..\\..\\arquivo.md`, `C:\\Windows\\teste.md`, `/etc/passwd`, etc.
+Nesta fase (escolha de pasta): o campo `output` foi **removido do contrato
+da API**. `start_transcriber` nao le mais esse campo — o nome do arquivo e
+sempre `transcript.md`, calculado no servidor a partir da pasta da reuniao
+(que por sua vez fica sempre dentro da raiz configurada, nunca escolhida
+pelo cliente por requisicao). A superficie de ataque nao esta so validada
+agora: nao existe mais. `validate_output_filename` continua no codigo,
+testada, disponivel pra uso futuro (ex.: nomes de arquivos de exportacao),
+mas nao e mais o unico obstaculo entre uma requisicao maliciosa e uma
+escrita fora de lugar. Testado com `../../arquivo.md`, `..\\..\\arquivo.md`,
+`C:\\Windows\\teste.md`, `/etc/passwd` em `tests/test_validation.py` e
+confirmando em `tests/test_webui.py` que um `output` malicioso simplesmente
+nao tem efeito nenhum no `/api/start` real.
+
+### 1b. Pasta-raiz escolhida pelo usuario — superficie nova, mitigada
+
+A pasta-raiz das reunioes agora vem de `Path` fornecido pelo usuario (via
+seletor nativo OU entrada manual de texto). Diferente do campo `output`
+antigo, aqui NAO faz sentido confinar a um "diretorio autorizado" — o
+proprio ato de escolher a raiz e o que autoriza. Mitigacoes aplicadas:
+`validate_meetings_root_path` exige uma string nao vazia e resolve com
+`Path.resolve()` (normaliza, nao executa nada); `check_folder_health` roda
+antes de aceitar a pasta (existe/e diretorio/tem espaco/e gravavel de
+verdade); trocar a raiz e bloqueado enquanto uma gravacao esta em
+andamento; a raiz e persistida so localmente em `data/settings.json`,
+nunca enviada a nenhum servico externo. `POST /api/open-folder` (abre a
+pasta no Explorador de Arquivos) SO aceita caminhos dentro da raiz
+configurada — nao pode ser usado como oráculo para abrir qualquer pasta
+arbitraria da maquina.
 
 ### 2. Ausencia de allowlist/limites nos demais campos — corrigido
 
@@ -84,7 +106,11 @@ dele finalizar o `.md`/gravar o bloco parcial. Ver `docs/ARCHITECTURE.md`
   usuario numa string de shell — `subprocess.Popen` sempre recebe uma lista
   de argumentos (`cmd = [...]`), o que evita command injection por
   construcao. Mantido assim; qualquer PR que troque isso por
-  `shell=True`/f-string de comando deve ser rejeitado.
+  `shell=True`/f-string de comando deve ser rejeitado. `open_folder` (botao
+  "Abrir pasta") segue a mesma regra: `os.startfile` no Windows e uma
+  chamada direta de API do SO (nem subprocess, nem shell), e nos demais SOs
+  usa `subprocess.Popen(["xdg-open"/"open", path])` — sempre lista, nunca
+  string montada.
 
 ## O que fica pra depois (fora do escopo desta fase)
 

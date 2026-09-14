@@ -64,33 +64,64 @@ tempo pra fila de whisper pendente ser drenada), `shutdown_sequence` escala
 para `proc.terminate()`, e so como ultimo recurso (mais `TERMINATE_TIMEOUT_
 SECONDS`, 5s) para `proc.kill()`.
 
-## Modelo de sessao (recuperacao)
+## Pasta de reunioes (local escolhido pelo usuario)
 
-Quando `--meeting-dir` e passado (o painel sempre passa), o progresso e
-espelhado em disco:
+O usuario escolhe uma unica vez (botao "Escolher pasta", seletor nativo via
+`folder_dialog.py`/`tkinter`) onde TODAS as reunioes ficam guardadas — essa
+raiz e persistida em `<projeto>/data/settings.json`
+(`meeting_transcriber.settings`) e lembrada entre execucoes; o padrao antes
+da primeira escolha e `Documentos/Reunioes`. Trocar a pasta e bloqueado
+enquanto uma gravacao/reprocessamento estiver em andamento.
+
+Cada reuniao vira uma subpasta dentro dessa raiz, nomeada com data, hora e
+titulo sanitizado (`session.sanitize_title_for_folder` remove caracteres
+invalidos no Windows, nomes reservados como `CON`/`NUL`, pontos/espacos nas
+pontas) mais um sufixo aleatorio pra garantir unicidade:
 
 ```
-data/meetings/<meeting_id>/
-    metadata.json   título, modelo, idioma, device, transcript_path (nao muda)
+<raiz escolhida>/2026-09-14_1900_Reuniao-Projeto-ERP_ab12ef/
+    metadata.json   título, modelo, idioma, device, root_directory,
+                     meeting_directory, transcript_path (nao muda depois de criado)
     state.json      status, contadores, lista de chunks (muda a cada evento,
                      escrito de forma atomica -- tmp file + os.replace)
+    transcript.md   a transcricao (nome sempre fixo -- nao vem mais do
+                     cliente, ver "Fim do campo output" abaixo)
     chunks/         os .wav de cada bloco (mesma pasta usada como work_dir)
 ```
 
-O `.md` da transcricao continua onde o usuario pediu (`--output`, por
-padrao um arquivo solto na raiz do projeto — assim o fluxo de uso atual,
-onde cada reuniao vira um `.md` direto na pasta, continua funcionando sem
-mudanca). `metadata.json` guarda o caminho absoluto desse `.md`
-(`transcript_path`) para o modo `--resume` saber onde continuar anexando.
+Antes de permitir iniciar uma gravacao (ou trocar a pasta-raiz),
+`validation.check_folder_health` roda a checklist: a pasta existe (ou pode
+ser criada), e realmente um diretorio, tem espaco livre acima do minimo
+(200 MB), e aceita um arquivo de teste de verdade (nao so "parece" gravavel
+— ACLs do Windows sao traicoeiras demais pra confiar sem testar). Qualquer
+falha impede o inicio, com mensagem clara — nunca falha silenciosamente no
+meio da reuniao.
 
-Na inicializacao do painel (`webui.py:main`), `session.mark_interrupted_
-sessions` varre `data/meetings/*/state.json`: qualquer sessao ainda marcada
+### Fim do campo `output`
+
+Antes, o nome do arquivo `.md` vinha de um campo de texto livre no painel
+(`output`), validado por `validate_output_filename` para impedir path
+traversal. Agora esse campo nem existe mais no contrato da API: o nome e
+sempre `transcript.md`, dentro da pasta que o proprio backend calcula a
+partir da raiz configurada — a superficie de path traversal foi eliminada
+por construcao, nao apenas validada (`validate_output_filename` continua
+existindo e testada, disponivel para uso futuro, ex.: nomes de exportacao).
+
+### Recuperacao
+
+Na inicializacao do painel (`webui.py:main`, so depois de confirmar que a
+porta foi vinculada — ver nota abaixo), `session.mark_interrupted_sessions`
+varre `<raiz>/*/state.json`: qualquer sessao ainda marcada
 `recording`/`processing` significa que o processo anterior morreu sem
 finalizar -- e marcada `interrupted` (nada e apagado) e aparece em
 `/api/recovery` pro usuario mandar reprocessar (`/api/meetings/<id>/resume`,
 que roda `python -m meeting_transcriber --resume <meeting_dir>`: nao grava
 audio novo, so retranscreve os blocos que ainda nao tinham sido transcritos
-com sucesso e reanexa ao `.md` existente).
+com sucesso e reanexa ao `.md` existente). **Limitacao conhecida:** a
+varredura so olha a raiz ATUAL configurada — reunioes deixadas para tras
+numa raiz anterior (o usuario trocou de pasta) nao aparecem no banner ate a
+raiz ser trocada de volta; os arquivos continuam intactos em disco, so nao
+sao descobertos automaticamente por essa tela.
 
 ## Validacao de entrada (webui.py)
 

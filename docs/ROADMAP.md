@@ -7,11 +7,17 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
 - [x] **Fase B — Nao perder reunioes.** Graceful shutdown (sinal em vez de
       kill duro, com escalonamento terminate->kill so se necessario),
       validacao de entrada da API (`meeting_transcriber.validation`),
-      modelo de sessao persistente (`meeting_transcriber.session`,
-      `data/meetings/<id>/`), deteccao + reprocessamento de sessao
-      interrompida, correcao do bug de hang quando o dispositivo de audio
-      falha ao abrir. Ver `docs/ARCHITECTURE.md`, `docs/RECOVERY.md`,
-      `docs/SECURITY.md`.
+      modelo de sessao persistente (`meeting_transcriber.session`),
+      deteccao + reprocessamento de sessao interrompida, correcao do bug de
+      hang quando o dispositivo de audio falha ao abrir. Escolha de pasta:
+      o usuario escolhe onde as reunioes ficam salvas (seletor nativo via
+      `folder_dialog.py`, persistido em `meeting_transcriber.settings`),
+      cada reuniao vira uma pasta legivel (`AAAA-MM-DD_HHMM_Titulo_xxxxxx`)
+      dentro dessa raiz, com checklist de saude (existe/e pasta/tem
+      espaco/e gravavel) antes de iniciar, e botao "Abrir pasta". O campo
+      `output` (nome de arquivo livre) foi removido da API — o path
+      traversal que existia nele foi eliminado por construcao. Ver
+      `docs/ARCHITECTURE.md`, `docs/RECOVERY.md`, `docs/SECURITY.md`.
 - [ ] **Fase C — Dispositivos.** Captura de microfone + loopback do sistema
       simultaneamente (canais separados), selecao de dispositivo, medidor de
       nivel de audio na interface, checagem de saude do audio antes de

@@ -58,22 +58,37 @@ dependencias sozinho (demora um pouco so nessa primeira execucao); nas
 proximas abre na hora. Ele sobe um painel local no navegador
 (`http://127.0.0.1:8765`) com:
 
+- **Local para salvar as reunioes**: um botao **Escolher pasta** abre o
+  seletor nativo de diretorios do Windows (ou entrada manual, se o seletor
+  nativo nao estiver disponivel no seu ambiente). Essa escolha fica
+  lembrada entre execucoes; na primeira vez, o padrao e
+  `Documentos\Reunioes`. Mostra tambem o espaco livre no disco, atualizado
+  periodicamente durante a gravacao;
 - Campos pra titulo, modelo, idioma, dispositivo (CPU/GPU) e tamanho do
   bloco (`chunk-seconds`);
 - Botao **Iniciar gravacao** / **Parar**;
+- Botao **Abrir pasta**, que abre a pasta da reuniao atual no Explorador de
+  Arquivos;
 - Log da transcricao ao vivo;
 - Barra de progresso do bloco de gravacao atual;
 - Indicador de "salvo" com o caminho completo do `.md` e horario da
   ultima atualizacao (util pra confirmar que esta gravando de verdade
-  sem precisar ficar abrindo o arquivo manualmente).
+  sem precisar ficar abrindo o arquivo manualmente);
+- Banner de **sessoes interrompidas**, se alguma reuniao ficou incompleta
+  (queda de energia, crash) — com um botao pra reprocessar sem perder nada.
+
+Cada reuniao vira uma pasta propria dentro do local escolhido, nomeada com
+data, hora e o titulo (ex.: `2026-09-14_1900_Reuniao-Projeto-ERP_ab12ef`),
+contendo `transcript.md`, `metadata.json`, `state.json` e os `.wav` de cada
+bloco em `chunks/`. Ver `docs/RECOVERY.md`.
 
 Esse painel roda 100% na sua maquina (`webui.py`, so biblioteca padrao do
-Python, sem Flask/FastAPI) e apenas liga/desliga o mesmo
-`python -m meeting_transcriber` de sempre como um processo em segundo
-plano — nao muda nada do comportamento descrito no resto deste README.
-Se voce ja tiver o painel aberto e clicar em `iniciar.bat` de novo, ele
-detecta e so abre o navegador na instancia existente, em vez de subir
-outra por cima.
+Python — inclusive o seletor de pasta, via `tkinter`, sem Flask/FastAPI/
+dependencia nova) e apenas liga/desliga o mesmo `python -m meeting_transcriber`
+de sempre como um processo em segundo plano — nao muda nada do comportamento
+descrito no resto deste README. Se voce ja tiver o painel aberto e clicar em
+`iniciar.bat` de novo, ele detecta e so abre o navegador na instancia
+existente, em vez de subir outra por cima.
 
 **Importante sobre `chunk-seconds`:** e sempre **um `.md` so**, do inicio
 ao fim da sessao — esse numero so controla de quanto em quanto tempo o
@@ -206,8 +221,10 @@ src/meeting_transcriber/
   recorder.py          # thread de gravacao: fatia o audio em blocos e enfileira
   transcriber.py        # carrega o Whisper e transcreve cada bloco (.wav -> texto)
   markdown_writer.py    # escreve o .md incrementalmente (cabecalho, blocos, rodape)
-  session.py             # modelo de sessao persistente (data/meetings/<id>/, recuperacao)
+  session.py             # modelo de sessao persistente (pasta por reuniao, recuperacao)
   validation.py           # validacao das entradas vindas da API do painel
+  settings.py              # configuracoes locais do app (pasta raiz das reunioes)
+  folder_dialog.py          # seletor nativo de pasta (tkinter, com fallback)
   cli.py                   # ponto de entrada `python -m meeting_transcriber`,
                             # junta gravacao + transcricao + escrita num loop so
   __main__.py              # so chama cli.main()
