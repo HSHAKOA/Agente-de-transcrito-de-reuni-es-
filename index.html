@@ -101,12 +101,41 @@
   }
   .btn-small:hover{filter:brightness(1.08)}
   .btn-small:disabled{opacity:.5;cursor:not-allowed}
+
+  .folder-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .folder-path{
+    flex:1;min-width:200px;font-family:ui-monospace,Consolas,monospace;font-size:.82rem;
+    color:var(--text);background:#0f1115;border:1px solid var(--line);border-radius:8px;
+    padding:10px 12px;word-break:break-all;
+  }
+  .btn-secondary{background:#2a2f3a}
+  .free-space{font-size:.76rem;color:var(--muted);margin:8px 0 0}
+  .free-space.low{color:var(--danger);font-weight:600}
+  .manual-folder-row{display:none;gap:8px;margin-top:10px}
+  .manual-folder-row.visible{display:flex;flex-wrap:wrap}
+  .manual-folder-row input{flex:1;min-width:200px}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>🎙️ Agente de Transcrição de Reuniões</h1>
   <p class="sub">Grava o áudio de saída do computador e transcreve com Whisper local. Deixe rodando durante a reunião.</p>
+
+  <div class="card">
+    <label style="margin-bottom:10px">Local para salvar as reuniões</label>
+    <div class="folder-row">
+      <div class="folder-path" id="folderPath">carregando...</div>
+      <button class="btn-small" id="chooseFolderBtn" type="button">📁 Escolher pasta</button>
+    </div>
+    <p class="free-space" id="freeSpaceText"></p>
+    <div class="manual-folder-row" id="manualFolderRow">
+      <input type="text" id="manualFolderInput" placeholder="Cole o caminho da pasta aqui">
+      <button class="btn-small btn-secondary" id="saveManualFolderBtn" type="button">Salvar</button>
+    </div>
+    <p class="hint" id="manualFolderHint" style="display:none">
+      O seletor nativo de pastas não está disponível neste ambiente — cole o caminho manualmente acima.
+    </p>
+  </div>
 
   <div class="card recovery-card" id="recoveryCard" style="display:none">
     <div class="recovery-title">⚠️ Sessões interrompidas encontradas</div>
@@ -120,15 +149,10 @@
   <div class="card">
     <div class="row">
       <div>
-        <label for="output">Arquivo de saída (.md)</label>
-        <input type="text" id="output" value="transcricao.md">
-      </div>
-      <div>
         <label for="title">Título da reunião</label>
         <input type="text" id="title" value="Transcrição de reunião">
+        <p class="hint">Uma pasta com este nome (e a data/hora) é criada dentro do local de armazenamento acima.</p>
       </div>
-    </div>
-    <div class="row">
       <div>
         <label for="model">Modelo Whisper</label>
         <select id="model">
@@ -139,6 +163,8 @@
           <option value="large-v3">large-v3 (mais preciso)</option>
         </select>
       </div>
+    </div>
+    <div class="row">
       <div>
         <label for="language">Idioma</label>
         <select id="language">
@@ -147,8 +173,6 @@
           <option value="auto">Detecção automática</option>
         </select>
       </div>
-    </div>
-    <div class="row">
       <div>
         <label for="device">Dispositivo</label>
         <select id="device">
@@ -156,6 +180,8 @@
           <option value="cuda">GPU (CUDA)</option>
         </select>
       </div>
+    </div>
+    <div class="row">
       <div>
         <label for="chunkSeconds">Tamanho do bloco (segundos)</label>
         <input type="number" id="chunkSeconds" value="300" min="15" step="15">
@@ -179,7 +205,10 @@
 
   <div class="card" id="fileCard" style="display:none">
     <label style="margin-bottom:10px">Arquivo da transcrição</label>
-    <div class="file-path" id="filePath"></div>
+    <div class="folder-row" style="margin-bottom:16px">
+      <div class="file-path" id="filePath" style="margin-bottom:0;flex:1"></div>
+      <button class="btn-small btn-secondary" id="openFolderBtn" type="button" disabled>📂 Abrir pasta</button>
+    </div>
 
     <div class="progress-row" id="progressRow" style="display:none">
       <div class="progress-label">
@@ -213,11 +242,15 @@ const $ = (id) => document.getElementById(id);
 const startBtn = $("startBtn"), stopBtn = $("stopBtn");
 const statusPill = $("statusPill"), statusText = $("statusText");
 const logEl = $("log"), msgEl = $("msg");
-const fileCard = $("fileCard"), filePath = $("filePath");
+const fileCard = $("fileCard"), filePath = $("filePath"), openFolderBtn = $("openFolderBtn");
 const progressRow = $("progressRow"), progressFill = $("progressFill"), progressText = $("progressText");
 const saveDot = $("saveDot"), saveText = $("saveText");
 const recoveryCard = $("recoveryCard"), recoveryList = $("recoveryList");
+const folderPath = $("folderPath"), freeSpaceText = $("freeSpaceText"), chooseFolderBtn = $("chooseFolderBtn");
+const manualFolderRow = $("manualFolderRow"), manualFolderInput = $("manualFolderInput");
+const saveManualFolderBtn = $("saveManualFolderBtn"), manualFolderHint = $("manualFolderHint");
 let lastLogLength = -1;
+let currentMeetingDir = null;
 let lastSavedAt = null;
 
 // sessoes que ja tiveram "Reprocessar" clicado nesta pagina, pra nao deixar
@@ -283,6 +316,99 @@ recoveryList.addEventListener("click", async (ev) => {
   refreshStatus();
 });
 
+// bytes -> "182,4 GB" / "820 MB", pra mostrar espaco livre de forma legivel
+function formatBytes(bytes) {
+  if (bytes == null) return "";
+  const gb = bytes / (1024 ** 3);
+  if (gb >= 1) return `${gb.toFixed(1).replace(".", ",")} GB`;
+  return `${Math.round(bytes / (1024 ** 2))} MB`;
+}
+
+async function refreshSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    const data = await res.json();
+    applySettingsInfo(data);
+  } catch (e) {
+    // silencioso: se o painel cair, refreshStatus ja mostra "sem conexao"
+  }
+}
+
+function applySettingsInfo(data) {
+  folderPath.textContent = data.meetings_root || "—";
+
+  if (data.free_bytes != null) {
+    const low = data.free_bytes < 500 * 1024 * 1024;
+    freeSpaceText.textContent = `Espaço livre: ${formatBytes(data.free_bytes)}`;
+    freeSpaceText.classList.toggle("low", low);
+  } else {
+    freeSpaceText.textContent = "Pasta ainda não existe (será criada ao iniciar a reunião).";
+    freeSpaceText.classList.remove("low");
+  }
+
+  const dialogAvailable = data.folder_dialog_available !== false;
+  manualFolderRow.classList.toggle("visible", !dialogAvailable);
+  manualFolderHint.style.display = dialogAvailable ? "none" : "";
+  chooseFolderBtn.style.display = dialogAvailable ? "" : "none";
+}
+
+chooseFolderBtn.addEventListener("click", async () => {
+  chooseFolderBtn.disabled = true;
+  chooseFolderBtn.textContent = "Abrindo seletor...";
+  try {
+    const res = await fetch("/api/choose-folder", { method: "POST" });
+    const data = await res.json();
+    applySettingsInfo(data);
+    if (!data.ok && !data.cancelled) {
+      msgEl.textContent = data.message;
+      msgEl.className = "msg error";
+    }
+  } finally {
+    chooseFolderBtn.disabled = false;
+    chooseFolderBtn.textContent = "📁 Escolher pasta";
+  }
+});
+
+saveManualFolderBtn.addEventListener("click", async () => {
+  const path = manualFolderInput.value.trim();
+  if (!path) return;
+  saveManualFolderBtn.disabled = true;
+  try {
+    const res = await fetch("/api/settings/meetings-root", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    const data = await res.json();
+    applySettingsInfo(data);
+    if (data.ok) {
+      manualFolderInput.value = "";
+    } else {
+      msgEl.textContent = data.message;
+      msgEl.className = "msg error";
+    }
+  } finally {
+    saveManualFolderBtn.disabled = false;
+  }
+});
+
+openFolderBtn.addEventListener("click", async () => {
+  if (!currentMeetingDir) return;
+  openFolderBtn.disabled = true;
+  try {
+    const res = await fetch("/api/open-folder", {
+      method: "POST",
+      body: JSON.stringify({ path: currentMeetingDir }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      msgEl.textContent = data.message;
+      msgEl.className = "msg error";
+    }
+  } finally {
+    openFolderBtn.disabled = false;
+  }
+});
+
 // segundos -> "1m30s" ou "45s", pra barra de progresso do bloco atual
 function formatClock(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -311,6 +437,9 @@ async function refreshStatus() {
       logEl.scrollTop = logEl.scrollHeight;
       lastLogLength = data.log.length;
     }
+
+    currentMeetingDir = data.meeting_dir || null;
+    openFolderBtn.disabled = !currentMeetingDir;
 
     if (data.output_path) {
       fileCard.style.display = "";
@@ -353,7 +482,6 @@ startBtn.addEventListener("click", async () => {
   msgEl.textContent = "";
   msgEl.className = "msg";
   const payload = {
-    output: $("output").value.trim() || "transcricao.md",
     title: $("title").value.trim() || "Transcrição de reunião",
     model: $("model").value,
     language: $("language").value,
@@ -379,8 +507,10 @@ stopBtn.addEventListener("click", async () => {
 
 refreshStatus();
 refreshRecovery();
+refreshSettings();
 setInterval(refreshStatus, 1500);
 setInterval(refreshRecovery, 5000);
+setInterval(refreshSettings, 20000); // reunioes longas: espaco livre precisa ficar atualizado
 </script>
 </body>
 </html>

@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -35,20 +36,28 @@ from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
-MEETINGS_DIR = ROOT / "data" / "meetings"
+SETTINGS_PATH = ROOT / "data" / "settings.json"
 
 # webui.py em si (nao so o subprocesso que ele lanca) agora usa
-# meeting_transcriber.validation/session, entao precisa de src/ no
-# sys.path tambem quando rodado direto (fora do .venv com editable install).
+# meeting_transcriber.validation/session/settings/folder_dialog, entao
+# precisa de src/ no sys.path tambem quando rodado direto (fora do .venv
+# com editable install).
 sys.path.insert(0, str(SRC))
 
-from meeting_transcriber import validation  # noqa: E402
+from meeting_transcriber import folder_dialog, settings, validation  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
     list_sessions,
     mark_interrupted_sessions,
     new_meeting_id,
 )
+
+# Pasta raiz onde TODAS as reunioes sao salvas -- escolhida pelo usuario
+# (botao "Escolher pasta" no painel) e lembrada entre execucoes via
+# settings.json. So um valor global porque so existe uma gravacao por vez
+# (garantido pelo SinglePortServer) -- mudar de pasta com uma gravacao em
+# andamento e bloqueado explicitamente (ver _apply_new_meetings_root).
+MEETINGS_DIR = settings.get_meetings_root(SETTINGS_PATH)
 
 PORT = 8765
 MAX_BODY_BYTES = 1_000_000  # 1 MB — generoso pros campos reais, barra corpo gigante como DoS
@@ -210,14 +219,117 @@ def _launch(cmd: list[str]) -> "tuple[subprocess.Popen, Optional[str]]":
     return proc, None
 
 
+def get_settings_info() -> dict:
+    """Estado atual das configuracoes de armazenamento: pasta raiz das
+    reunioes + espaco livre (quando a pasta existe) -- consultado pela
+    pagina ao carregar e periodicamente durante uma gravacao longa (a
+    missao pede monitorar espaco, nao so checar uma vez no inicio)."""
+    info = {
+        "meetings_root": str(MEETINGS_DIR),
+        "folder_dialog_available": folder_dialog.is_available(),
+        "free_bytes": None,
+    }
+    if MEETINGS_DIR.exists():
+        try:
+            info["free_bytes"] = shutil.disk_usage(MEETINGS_DIR).free
+        except OSError:
+            pass
+    return info
+
+
+def _apply_new_meetings_root(candidate: Path) -> "tuple[bool, str]":
+    """Cria a pasta se preciso, roda a checklist de saude (existe, e pasta,
+    tem espaco, e gravavel de verdade) e so persiste em settings.json se
+    passar em tudo -- nunca troca a raiz "as cegas"."""
+    global MEETINGS_DIR
+
+    with state_lock:
+        if state["proc"] is not None:
+            return False, "Nao e possivel trocar a pasta com uma gravacao em andamento."
+
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return False, f"Nao foi possivel criar a pasta “{candidate}”: {exc}"
+
+        health = validation.check_folder_health(candidate)
+        if not health.ok:
+            return False, health.message
+
+        MEETINGS_DIR = candidate
+        settings.set_meetings_root(SETTINGS_PATH, candidate)
+
+    return True, "Pasta de reunioes atualizada."
+
+
+def _validate_and_apply_root(path_value) -> dict:
+    try:
+        candidate = validation.validate_meetings_root_path(path_value)
+    except validation.ValidationError as exc:
+        return {"ok": False, "cancelled": False, "message": str(exc), **get_settings_info()}
+    ok, message = _apply_new_meetings_root(candidate)
+    return {"ok": ok, "cancelled": False, "message": message, **get_settings_info()}
+
+
+def choose_meetings_folder() -> dict:
+    """Abre o seletor nativo de pasta (ver folder_dialog.py) e, se o
+    usuario escolher algo, valida e persiste como a nova raiz."""
+    initial = str(MEETINGS_DIR) if MEETINGS_DIR.exists() else None
+    chosen = folder_dialog.pick_directory(initial_dir=initial)
+    if chosen is None:
+        return {"ok": False, "cancelled": True, "message": "Nenhuma pasta selecionada.", **get_settings_info()}
+    return _validate_and_apply_root(chosen)
+
+
+def set_meetings_folder_manual(path_value) -> dict:
+    """Fallback quando o dialogo nativo nao esta disponivel (ex.: tkinter
+    ausente no ambiente): usuario digita o caminho, mesma validacao."""
+    return _validate_and_apply_root(path_value)
+
+
+def open_folder(path_value) -> "tuple[bool, str]":
+    """Abre o Explorador de Arquivos (ou equivalente) na pasta indicada.
+
+    `os.startfile` no Windows e uma chamada direta de API do SO -- nao um
+    shell, nao interpreta o path como comando. Nos demais SOs usamos
+    subprocess.Popen com uma LISTA de argumentos (nunca shell=True nem
+    concatenacao de string no comando).
+    """
+    if not isinstance(path_value, str) or not path_value.strip():
+        return False, "Caminho invalido."
+    try:
+        path = Path(path_value).resolve()
+    except (OSError, RuntimeError):
+        return False, "Caminho invalido."
+
+    meetings_resolved = MEETINGS_DIR.resolve()
+    if path != meetings_resolved and meetings_resolved not in path.parents:
+        return False, "So e possivel abrir pastas dentro da raiz de reunioes configurada."
+    if not path.exists():
+        return False, "Pasta nao encontrada."
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # noqa: S606 - API nativa do SO, nao e shell
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        return False, f"Nao foi possivel abrir a pasta: {exc}"
+    return True, "Pasta aberta."
+
+
 def start_transcriber(opts: dict) -> "tuple[bool, str]":
     """Valida as opcoes vindas do formulario HTML, monta o comando
     `python -m meeting_transcriber ...` e sobe ele como subprocesso.
     Retorna (sucesso, mensagem) pra virar a resposta JSON do /api/start.
 
     Nenhum campo e confiado sem validacao — ver meeting_transcriber.validation.
-    Isso inclui o nome do arquivo de saida: so um nome simples e aceito,
-    nunca um caminho (barra a escrita de arquivo arbitraria/path traversal).
+    O nome do arquivo de saida nao vem mais do cliente: e sempre
+    `transcript.md` dentro da pasta da propria reuniao (que fica dentro da
+    raiz configurada em MEETINGS_DIR) — elimina de vez a superficie de
+    path traversal que antes existia no campo "output".
     """
     try:
         model = validation.validate_model(opts.get("model") or "small")
@@ -225,7 +337,6 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         language = validation.validate_language(opts.get("language") or "pt")
         chunk_seconds = validation.validate_chunk_seconds(opts.get("chunk_seconds", 300))
         title = validation.validate_title(opts.get("title"))
-        output_path = validation.validate_output_filename(opts.get("output"), ROOT)
     except validation.ValidationError as exc:
         return False, str(exc)
 
@@ -242,8 +353,19 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
                 "automaticamente antes de abrir o navegador."
             )
 
-        meeting_id = new_meeting_id()
+        # nunca iniciar silenciosamente numa pasta que nao existe, sem
+        # espaco livre suficiente, ou sem permissao de escrita de verdade.
+        try:
+            MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return False, f"Nao foi possivel criar a pasta de reunioes “{MEETINGS_DIR}”: {exc}"
+        health = validation.check_folder_health(MEETINGS_DIR)
+        if not health.ok:
+            return False, health.message
+
+        meeting_id = new_meeting_id(title=title)
         meeting_dir = MEETINGS_DIR / meeting_id
+        output_path = meeting_dir / "transcript.md"
 
         cmd = [
             _python_executable(),
@@ -433,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_status())  # consultado pela pagina a cada 1.5s
             elif self.path == "/api/recovery":
                 self._send_json(get_recovery())
+            elif self.path == "/api/settings":
+                self._send_json(get_settings_info())
             else:
                 self.send_error(404)
         except Exception:
@@ -487,6 +611,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/stop":
                 ok, msg = stop_transcriber()
+                self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+                return
+            if self.path == "/api/choose-folder":
+                self._send_json(choose_meetings_folder())
+                return
+            if self.path == "/api/settings/meetings-root":
+                self._send_json(set_meetings_folder_manual(body.get("path")))
+                return
+            if self.path == "/api/open-folder":
+                ok, msg = open_folder(body.get("path"))
                 self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
                 return
             match = _RESUME_PATH_RE.match(self.path)

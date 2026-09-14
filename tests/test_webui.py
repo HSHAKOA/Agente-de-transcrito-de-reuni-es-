@@ -14,6 +14,7 @@ import http.client
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -85,6 +86,7 @@ def _isolated_webui(tmp_path, monkeypatch):
     um processo de verdade, e o estado global e resetado."""
     monkeypatch.setattr(webui, "ROOT", tmp_path)
     monkeypatch.setattr(webui, "MEETINGS_DIR", tmp_path / "data" / "meetings")
+    monkeypatch.setattr(webui, "SETTINGS_PATH", tmp_path / "data" / "settings.json")
     (tmp_path / ".venv").mkdir()  # start_transcriber exige isso existir
 
     created_procs = []
@@ -126,12 +128,52 @@ def _wait_for(predicate, timeout=2.0):
 # -- start_transcriber: validacao ------------------------------------------
 
 def test_start_transcriber_happy_path(_isolated_webui):
-    ok, msg = webui.start_transcriber({"output": "reuniao.md", "model": "small", "device": "cpu"})
+    ok, msg = webui.start_transcriber({"title": "Reuniao de teste", "model": "small", "device": "cpu"})
     assert ok, msg
     assert len(_isolated_webui) == 1
     cmd = _isolated_webui[0].args
     assert "--meeting-dir" in cmd
-    assert str(webui.ROOT / "reuniao.md") in cmd
+    output_index = cmd.index("--output") + 1
+    output_path = Path(cmd[output_index])
+    assert output_path.name == "transcript.md"
+    assert webui.MEETINGS_DIR.resolve() in output_path.parents
+
+
+def test_start_transcriber_creates_meetings_root_when_missing(_isolated_webui, tmp_path):
+    webui.MEETINGS_DIR = tmp_path / "nao-existe-ainda" / "Reunioes"
+    assert not webui.MEETINGS_DIR.exists()
+
+    ok, msg = webui.start_transcriber({})
+
+    assert ok, msg
+    assert webui.MEETINGS_DIR.exists()
+
+
+def test_start_transcriber_rejects_when_meetings_root_is_a_file(_isolated_webui, tmp_path):
+    blocked = tmp_path / "isto-e-um-arquivo"
+    blocked.write_text("x", encoding="utf-8")
+    webui.MEETINGS_DIR = blocked
+
+    ok, msg = webui.start_transcriber({})
+
+    assert not ok
+    assert _isolated_webui == []
+
+
+def test_start_transcriber_ignores_client_supplied_output_field(_isolated_webui):
+    """O campo "output" nao e mais lido: a superficie de path traversal que
+    existia nele foi eliminada por construcao (nao so validada) -- o nome
+    do arquivo final e sempre transcript.md dentro da pasta da propria
+    reuniao, nunca importa o que o cliente mande em "output"."""
+    ok, msg = webui.start_transcriber({"output": "../../../windows/win.ini"})
+
+    assert ok, msg
+    cmd = _isolated_webui[0].args
+    output_index = cmd.index("--output") + 1
+    output_path = Path(cmd[output_index])
+    assert output_path.name == "transcript.md"
+    assert webui.MEETINGS_DIR.resolve() in output_path.parents
+    assert "win.ini" not in str(output_path)
 
 
 @pytest.mark.parametrize(
@@ -143,9 +185,6 @@ def test_start_transcriber_happy_path(_isolated_webui):
         ("chunk_seconds", 999_999_999),
         ("chunk_seconds", "abc"),
         ("title", "x" * 500),
-        ("output", "../../arquivo.md"),
-        ("output", "..\\..\\arquivo.md"),
-        ("output", "C:\\Windows\\teste.md"),
         ("language", "pt; DROP TABLE"),
     ],
 )
@@ -300,6 +339,113 @@ def test_resume_meeting_launches_subprocess_for_known_session(_isolated_webui):
     assert "--resume" in _isolated_webui[0].args
 
 
+# -- pasta de reunioes (settings, dialogo nativo, abrir pasta) --------------
+
+def test_get_settings_info_reports_current_root(_isolated_webui):
+    webui.MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+    info = webui.get_settings_info()
+    assert info["meetings_root"] == str(webui.MEETINGS_DIR)
+    assert info["free_bytes"] is not None
+    assert isinstance(info["folder_dialog_available"], bool)
+
+
+def test_get_settings_info_free_bytes_none_when_root_missing(_isolated_webui):
+    info = webui.get_settings_info()
+    assert info["free_bytes"] is None
+
+
+def test_choose_meetings_folder_persists_valid_selection(_isolated_webui, monkeypatch, tmp_path):
+    chosen_dir = tmp_path / "Escolhida"
+    monkeypatch.setattr(webui.folder_dialog, "pick_directory", lambda initial_dir=None: str(chosen_dir))
+
+    result = webui.choose_meetings_folder()
+
+    assert result["ok"] is True
+    assert result["cancelled"] is False
+    assert webui.MEETINGS_DIR == chosen_dir.resolve()
+    from meeting_transcriber import settings as settings_module
+
+    assert settings_module.get_meetings_root(webui.SETTINGS_PATH) == chosen_dir.resolve()
+
+
+def test_choose_meetings_folder_reports_cancellation_without_error(_isolated_webui, monkeypatch):
+    monkeypatch.setattr(webui.folder_dialog, "pick_directory", lambda initial_dir=None: None)
+    previous_root = webui.MEETINGS_DIR
+
+    result = webui.choose_meetings_folder()
+
+    assert result["ok"] is False
+    assert result["cancelled"] is True
+    assert webui.MEETINGS_DIR == previous_root  # nao mudou nada
+
+
+def test_choose_meetings_folder_rejects_unhealthy_selection(_isolated_webui, monkeypatch, tmp_path):
+    blocked_file = tmp_path / "arquivo-nao-pasta"
+    blocked_file.write_text("x", encoding="utf-8")
+    # aponta o "dialogo" pro pai do arquivo, mas simula que o usuario de
+    # alguma forma escolheu o proprio arquivo (pick_directory devolvendo
+    # um caminho que nao e pasta) -- check_folder_health precisa recusar
+    monkeypatch.setattr(webui.folder_dialog, "pick_directory", lambda initial_dir=None: str(blocked_file))
+    previous_root = webui.MEETINGS_DIR
+
+    result = webui.choose_meetings_folder()
+
+    assert result["ok"] is False
+    assert result["cancelled"] is False
+    assert webui.MEETINGS_DIR == previous_root
+
+
+def test_choose_meetings_folder_refuses_while_recording(_isolated_webui, monkeypatch, tmp_path):
+    webui.start_transcriber({})
+    monkeypatch.setattr(webui.folder_dialog, "pick_directory", lambda initial_dir=None: str(tmp_path / "Outra"))
+
+    result = webui.choose_meetings_folder()
+
+    assert result["ok"] is False
+    assert "andamento" in result["message"].lower()
+
+
+def test_set_meetings_folder_manual_validates_and_persists(_isolated_webui, tmp_path):
+    new_root = tmp_path / "Digitada"
+    result = webui.set_meetings_folder_manual(str(new_root))
+    assert result["ok"] is True
+    assert webui.MEETINGS_DIR == new_root.resolve()
+
+
+def test_set_meetings_folder_manual_rejects_empty_string(_isolated_webui):
+    result = webui.set_meetings_folder_manual("")
+    assert result["ok"] is False
+
+
+def test_open_folder_opens_path_within_meetings_root(_isolated_webui, monkeypatch):
+    webui.MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+    calls = []
+    monkeypatch.setattr(webui.os, "startfile", lambda p: calls.append(p), raising=False)
+    monkeypatch.setattr(webui.sys, "platform", "win32")
+
+    ok, msg = webui.open_folder(str(webui.MEETINGS_DIR))
+
+    assert ok, msg
+    assert calls == [str(webui.MEETINGS_DIR)]
+
+
+def test_open_folder_rejects_path_outside_meetings_root(_isolated_webui, tmp_path):
+    outside = tmp_path.parent  # garantidamente fora de MEETINGS_DIR
+    ok, msg = webui.open_folder(str(outside))
+    assert not ok
+
+
+def test_open_folder_rejects_missing_path(_isolated_webui):
+    ok, msg = webui.open_folder(str(webui.MEETINGS_DIR / "nao-existe"))
+    assert not ok
+
+
+def test_open_folder_rejects_invalid_input(_isolated_webui):
+    for bad in (None, "", 123, []):
+        ok, _ = webui.open_folder(bad)
+        assert not ok
+
+
 # -- get_status / get_recovery -----------------------------------------------
 
 def test_get_status_when_idle(_isolated_webui):
@@ -429,6 +575,44 @@ def test_http_rejects_bad_host_header(live_server):
         conn.close()
 
 
+def test_http_get_settings_route(live_server):
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/api/settings")
+    resp = conn.getresponse()
+    data = json.loads(resp.read())
+    conn.close()
+    assert resp.status == 200
+    assert "meetings_root" in data
+
+
+def test_http_settings_meetings_root_route(live_server, tmp_path):
+    new_root = tmp_path / "PastaViaHTTP"
+    payload = json.dumps({"path": str(new_root)}).encode("utf-8")
+    status, body = _post(live_server, "/api/settings/meetings-root", payload, {"Content-Length": str(len(payload))})
+    data = json.loads(body)
+    assert status == 200
+    assert data["ok"] is True
+    assert data["meetings_root"] == str(new_root.resolve())
+
+
+def test_http_choose_folder_route(live_server, monkeypatch, tmp_path):
+    chosen = tmp_path / "EscolhidaViaHTTP"
+    monkeypatch.setattr(webui.folder_dialog, "pick_directory", lambda initial_dir=None: str(chosen))
+    status, body = _post(live_server, "/api/choose-folder", b"{}", {"Content-Length": "2"})
+    data = json.loads(body)
+    assert status == 200
+    assert data["ok"] is True
+    assert data["meetings_root"] == str(chosen.resolve())
+
+
+def test_http_open_folder_route_rejects_outside_root(live_server, tmp_path):
+    payload = json.dumps({"path": str(tmp_path.parent)}).encode("utf-8")
+    status, body = _post(live_server, "/api/open-folder", payload, {"Content-Length": str(len(payload))})
+    data = json.loads(body)
+    assert status == 409
+    assert data["ok"] is False
+
+
 def test_http_start_then_status_reports_running(live_server):
     payload = json.dumps({"output": "reuniao.md"}).encode("utf-8")
     status, body = _post(live_server, "/api/start", payload, {"Content-Length": str(len(payload))})
@@ -443,9 +627,13 @@ def test_http_start_then_status_reports_running(live_server):
     assert data["running"] is True
 
 
-def test_http_start_with_malicious_output_returns_400_family(live_server):
+def test_http_start_with_malicious_output_field_has_no_effect(live_server):
+    """O campo "output" nao existe mais no contrato da API -- um valor de
+    path traversal nele e simplesmente ignorado (200 OK, arquivo real fica
+    em transcript.md dentro da pasta da reuniao), nao "rejeitado com 400"
+    porque nao ha mais nada pra rejeitar: a superficie foi removida."""
     payload = json.dumps({"output": "../../../windows/win.ini"}).encode("utf-8")
     status, body = _post(live_server, "/api/start", payload, {"Content-Length": str(len(payload))})
     data = json.loads(body)
-    assert data["ok"] is False
-    assert status == 409  # start_transcriber trata validacao como falha de negocio, nao erro de protocolo
+    assert status == 200
+    assert data["ok"] is True
