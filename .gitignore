@@ -7,3 +7,6 @@ __pycache__/
 # transcricoes geradas pelo uso do app (dados do usuario, nao do codigo)
 /transcricao*.md
 /teste*.md
+
+# reunioes gravadas (audio + estado de sessao) — dados privados do usuario
+/data/
