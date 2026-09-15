@@ -247,6 +247,88 @@ def test_dual_capture_no_threads_left_running_after_return(tmp_path: Path):
     assert after - before == set()  # nada novo sobrou rodando
 
 
+def test_dual_capture_survives_one_source_crashing_mid_recording(tmp_path: Path):
+    """Se uma fonte falha de verdade no meio (ex.: dispositivo desconectado
+    -- aqui simulado por uma excecao dentro de `record()`), a OUTRA fonte
+    precisa continuar funcionando normalmente, e o mixer nao pode travar
+    esperando um chunk que nunca vai chegar da fonte que caiu.
+
+    Dublês proprios aqui (nao o `_FakeMic`/barrier usados no resto do
+    arquivo): a fonte que crasha nunca chega a um ponto de rendezvous, so
+    a que sobrevive precisa de um jeito de saber quando parar -- ela
+    mesma sinaliza o `stop_event` compartilhado ao esgotar sua propria
+    lista de blocos, o que aqui e seguro porque so ELA (a sobrevivente)
+    pode nunca fazer isso sozinha.
+    """
+
+    class _CrashingStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def record(self, numframes):
+            raise OSError("dispositivo desconectado (simulado)")
+
+    class _CrashingMic:
+        def recorder(self, samplerate, channels):
+            return _CrashingStream()
+
+    class _SelfStoppingStream:
+        def __init__(self, blocks, stop_event):
+            self._blocks = blocks
+            self._stop_event = stop_event
+            self._i = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def record(self, numframes):
+            if self._i >= len(self._blocks):
+                self._stop_event.set()
+                return np.zeros(numframes, dtype=np.float32)
+            block = self._blocks[self._i]
+            self._i += 1
+            if self._i >= len(self._blocks):
+                self._stop_event.set()
+            return block
+
+    class _SelfStoppingMic:
+        def __init__(self, blocks, stop_event):
+            self._blocks = blocks
+            self._stop_event = stop_event
+
+        def recorder(self, samplerate, channels):
+            return _SelfStoppingStream(self._blocks, self._stop_event)
+
+    stop_event = threading.Event()
+    crashing_system = _CrashingMic()
+    healthy_mic = _SelfStoppingMic([_make_block(0.1) for _ in range(4)], stop_event)
+    out_queue: "queue.Queue" = queue.Queue()
+
+    # dual_recording_worker roda cada fonte na sua propria thread -- um
+    # crash na fonte "system" (imediato, no 1o read) nao pode travar o
+    # teste nem impedir a fonte "microphone" de gravar normalmente.
+    dual_recording_worker(
+        tmp_path, chunk_seconds=1, stop_event=stop_event, out_queue=out_queue,
+        system_mic_factory=lambda: crashing_system, microphone_mic_factory=lambda: healthy_mic,
+        samplerate=SAMPLE_RATE,
+    )
+
+    chunks = [c for c in _drain(out_queue) if c is not None]
+    # a fonte "microphone" continuou produzindo chunks normalmente mesmo
+    # com "system" tendo crashado logo no inicio.
+    assert len(chunks) >= 1
+    for chunk in chunks:
+        assert chunk.path.exists()
+        data, _sr = sf.read(str(chunk.path))
+        assert np.allclose(data, 0.1, atol=0.01)  # so o microfone -- sistema nunca produziu nada
+
+
 # -- _mix_loop: pareamento direto (sem threads) ---------------------------
 
 def test_mix_loop_pairs_matching_indexes(tmp_path: Path):
