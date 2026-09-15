@@ -1,250 +1,226 @@
-# meeting-transcriber
+# Meeting Intelligence
 
-Agente em Python que grava o audio de saida do computador (o que esta
-tocando pelas caixas/fone — ex.: o audio de uma reuniao no Zoom, Google
-Meet, Teams, uma aula gravada, qualquer coisa que esteja tocando) e gera
-uma transcricao em Markdown, com timestamps, usando o modelo Whisper
-rodando localmente (`faster-whisper`).
+Software local-first que grava reuniões e aulas (áudio do computador +
+microfone, simultaneamente), transcreve com Whisper rodando na própria
+máquina, organiza um histórico pesquisável e permite agendar gravações
+automáticas — sem bot entrando em nenhuma chamada, sem áudio saindo do
+seu computador, sem custo por minuto.
 
-## Pra que serve / por que existe
+## O problema
 
-A ideia e simples: **deixar rodando durante uma reuniao ou aula e, no
-final, ter um `.md` com tudo que foi dito, com hora de cada trecho**, sem
-depender de um servico pago por minuto e sem o audio sair da sua maquina
-(o Whisper roda 100% local, offline depois de baixado uma vez). Nasceu de
-uma necessidade bem concreta: gravar aulas/reunioes longas (horas) sem
-travar nem perder o que ja foi gravado se algo der errado no meio.
+Reuniões e aulas geram informação valiosa que se perde: ninguém anota
+tudo, gravações ficam soltas em pastas sem organização, e serviços de
+transcrição em nuvem cobram por minuto e exigem enviar áudio (às vezes
+sensível) para servidores de terceiros.
 
-## Como funciona (visao geral)
+## A solução
+
+Um agente Python que roda inteiramente na sua máquina: captura o áudio
+que está tocando no computador (a fala dos outros participantes) e o seu
+microfone ao mesmo tempo, transcreve com [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+localmente, salva tudo organizado por reunião, e recupera sozinho de
+quedas de energia ou crashes sem perder o que já foi gravado. Também
+permite **agendar** gravações (aula de segunda às 19h, toda semana) e
+manter um **histórico pesquisável** de tudo que já foi gravado.
+
+## Principais funcionalidades
+
+- **Captura simultânea**: áudio do computador (loopback WASAPI) e
+  microfone, em canais separados, com seleção explícita de dispositivo e
+  medidor de nível ao vivo.
+- **Transcrição em duas velocidades**: uma prévia de baixa latência
+  (segundos) para acompanhar ao vivo, e uma transcrição definitiva por
+  bloco (mais precisa) que substitui a prévia quando fica pronta.
+- **Nunca perde áudio**: gravação e transcrição rodam em threads
+  separadas — se o Whisper atrasar, a gravação continua normalmente.
+  Encerramento sempre gracioso (nunca `kill` direto): o bloco em
+  andamento termina de ser escrito antes do processo fechar.
+- **Recuperação automática**: se o processo morrer no meio (queda de
+  energia, crash), o painel detecta sozinho na próxima abertura e oferece
+  reprocessar os blocos pendentes, sem apagar nada.
+- **Agendamento**: uma reunião recorrente ("toda segunda 19h-20h40")
+  dispara início/fim automáticos, com checagem prévia de pasta/
+  dispositivo (preflight) e tratamento explícito de "esqueci de abrir o
+  app" (marcado como perdido, nunca começa silenciosamente atrasado).
+- **Histórico e busca**: cada reunião gravada fica pesquisável (por
+  título ou conteúdo da transcrição) num índice local (SQLite).
+- **Exportação**: Markdown, TXT, JSON, SRT e VTT, gerados sob demanda.
+- **100% local**: o Whisper roda offline depois de baixado uma vez; nada
+  é enviado a nenhum serviço externo.
+
+## Como funciona
+
+```mermaid
+flowchart TD
+    U[Usuário] --> UI[Painel local /index.html]
+    UI --> M{Início}
+    M -->|Agora| START[Iniciar gravação]
+    M -->|Agendado| SCHED[Scheduler]
+
+    SCHED --> PRE[Preflight: pasta + dispositivos]
+    PRE --> START
+
+    START --> STORAGE[Checagem de armazenamento]
+    STORAGE --> AUDIO[Checagem de áudio]
+
+    AUDIO --> SYS[Áudio do sistema]
+    AUDIO --> MIC[Microfone]
+
+    SYS --> REC[Recorder]
+    MIC --> REC
+
+    REC --> WAV[Chunks duráveis 30-120s]
+    REC --> LIVE[Janelas de baixa latência 8s]
+
+    WAV --> WHISPER[Whisper - transcrição definitiva]
+    LIVE --> WHISPERFAST[Whisper - prévia rápida]
+
+    WHISPER --> MD[transcript.md]
+    WHISPER --> DB[(SQLite - histórico)]
+    WHISPERFAST --> SSE[SSE - texto ao vivo]
+
+    SSE --> UI
+    DB --> SEARCH[Busca e histórico]
+    DB --> EXPORT[Exportação MD/TXT/JSON/SRT/VTT]
+```
+
+Fluxogramas detalhados de cada etapa (gravação, encerramento gracioso,
+recuperação, agendamento, schema do banco) estão em
+`docs/FLOWCHARTS.md`.
+
+## Arquitetura
+
+- **Backend**: Python, biblioteca padrão sempre que possível (o painel
+  HTTP em `webui.py` não usa Flask/FastAPI). `faster-whisper` para
+  transcrição, `soundcard` para captura de áudio (WASAPI no Windows),
+  `sqlite3` (stdlib) para o histórico.
+- **Frontend ativo**: `index.html` + JavaScript puro (`fetch`/SSE), servido
+  pelo próprio `webui.py`. Uma migração para React + TypeScript + Vite +
+  Tailwind está em preparação (`frontend/`) mas ainda não é a interface
+  ativa — ver "Estado atual".
+- **Local-first**: nenhuma dependência de nuvem obrigatória; o único
+  acesso à internet é o download do modelo Whisper na primeira vez.
+
+## Fluxo completo
 
 ```
-                    thread de gravacao                thread principal
-                    (nunca para/espera)                (consome a fila)
-                            │                                  │
-  loopback do SO ──► grava blocos de N segundos ──► fila ──► Whisper transcreve
-  (o que sai no                  │                            cada bloco
-   fone/caixa)                   ▼                                  │
-                            salva chunk_NNNNN.wav                   ▼
-                                                          anexa no .md na hora
-                                                          (nao espera a reuniao
-                                                           acabar pra escrever)
+Usuário → Painel (index.html) → API local (webui.py) → Session Manager
+   → Audio Pipeline (sistema + microfone) → Whisper (ao vivo + durável)
+   → transcript.md + SQLite → Histórico/Busca/Exportação
 ```
 
-Tres ideias centrais no design:
+Agendamentos entram pelo Scheduler (`meeting_transcriber.scheduling`),
+que dispara a mesma sequência de início no horário programado.
 
-1. **Grava em blocos, nao a reuniao inteira de uma vez.** Por padrao, a
-   cada 300s (5 min) o audio acumulado vira um `.wav` e entra numa fila.
-   Isso mantem o uso de memoria limitado (so ficam em RAM os segundos mais
-   recentes) em vez de acumular horas de audio.
-2. **Gravar e transcrever rodam em paralelo, em threads separadas.** A
-   gravacao nunca fica esperando o Whisper terminar de processar o bloco
-   anterior — se a transcricao demorar mais que o normal, os blocos so vao
-   se acumulando na fila, sem furar a gravacao.
-3. **O `.md` e escrito incrementalmente, bloco por bloco.** Cada trecho
-   transcrito e anexado ao arquivo na hora, ao inves de tudo ser montado
-   em memoria e salvo so no final. Assim, se o processo cair no meio
-   (queda de energia, erro, `--no-keep-audio` etc.), voce so perde no
-   maximo o ultimo bloco incompleto — tudo que ja foi transcrito antes
-   continua salvo em disco.
+## Tecnologias
 
-Ver os comentarios em `src/meeting_transcriber/` (especialmente
-`cli.py` e `recorder.py`) pra mais detalhes de cada etapa.
+Python 3.9+, `faster-whisper` (CTranslate2), `soundcard`, `sqlite3`,
+`tzdata`/`tzlocal`, `numpy`, `soundfile`. Frontend em preparação: React
+19, TypeScript, Vite, Tailwind CSS v4 (sem Next.js).
 
-## Modo facil (painel com botao, sem terminal)
+## Como executar
 
-Se voce nao quer digitar comando nenhum: de dois cliques em `iniciar.bat`
-(Windows). Na primeira vez ele cria o ambiente virtual e instala as
-dependencias sozinho (demora um pouco so nessa primeira execucao); nas
-proximas abre na hora. Ele sobe um painel local no navegador
-(`http://127.0.0.1:8765`) com:
+**Modo fácil (Windows, sem terminal):** dê dois cliques em `iniciar.bat`.
+Na primeira vez ele cria o ambiente virtual e instala as dependências
+sozinho; depois abre direto o painel em `http://127.0.0.1:8765`.
 
-- **Local para salvar as reunioes**: um botao **Escolher pasta** abre o
-  seletor nativo de diretorios do Windows (ou entrada manual, se o seletor
-  nativo nao estiver disponivel no seu ambiente). Essa escolha fica
-  lembrada entre execucoes; na primeira vez, o padrao e
-  `Documentos\Reunioes`. Mostra tambem o espaco livre no disco, atualizado
-  periodicamente durante a gravacao;
-- Campos pra titulo, modelo, idioma, dispositivo (CPU/GPU) e tamanho do
-  bloco (`chunk-seconds`);
-- Botao **Iniciar gravacao** / **Parar**;
-- Botao **Abrir pasta**, que abre a pasta da reuniao atual no Explorador de
-  Arquivos;
-- Log da transcricao ao vivo;
-- Barra de progresso do bloco de gravacao atual;
-- Indicador de "salvo" com o caminho completo do `.md` e horario da
-  ultima atualizacao (util pra confirmar que esta gravando de verdade
-  sem precisar ficar abrindo o arquivo manualmente);
-- Banner de **sessoes interrompidas**, se alguma reuniao ficou incompleta
-  (queda de energia, crash) — com um botao pra reprocessar sem perder nada.
-
-Cada reuniao vira uma pasta propria dentro do local escolhido, nomeada com
-data, hora e o titulo (ex.: `2026-09-14_1900_Reuniao-Projeto-ERP_ab12ef`),
-contendo `transcript.md`, `metadata.json`, `state.json` e os `.wav` de cada
-bloco em `chunks/`. Ver `docs/RECOVERY.md`.
-
-Esse painel roda 100% na sua maquina (`webui.py`, so biblioteca padrao do
-Python — inclusive o seletor de pasta, via `tkinter`, sem Flask/FastAPI/
-dependencia nova) e apenas liga/desliga o mesmo `python -m meeting_transcriber`
-de sempre como um processo em segundo plano — nao muda nada do comportamento
-descrito no resto deste README. Se voce ja tiver o painel aberto e clicar em
-`iniciar.bat` de novo, ele detecta e so abre o navegador na instancia
-existente, em vez de subir outra por cima.
-
-**Importante sobre `chunk-seconds`:** e sempre **um `.md` so**, do inicio
-ao fim da sessao — esse numero so controla de quanto em quanto tempo o
-audio e fatiado internamente. Pra reunioes/aulas longas (1h+), o padrao
-de `300` (5 min) e um bom equilibrio: poucas chamadas ao Whisper, frases
-raramente cortadas ao meio. Pra testar rapido se esta tudo funcionando,
-baixe pra `15` ou `30` so durante o teste.
-
-## Limitacao importante
-
-Este agente captura **apenas o audio de SAIDA do sistema** (o que voce
-ouve). Ele **nao captura o seu microfone**. Na pratica isso significa:
-
-- A fala dos outros participantes da reuniao (que chega pelo seu
-  fone/caixa) **e transcrita normalmente**.
-- A sua propria fala **so aparece na transcricao se o app de reuniao
-  ecoar o seu microfone de volta no seu audio de saida** (a maioria nao
-  faz isso).
-
-Se voce quiser transcrever tambem a sua propria fala, e necessario somar a
-captura do microfone junto com a captura de loopback (nao implementado
-aqui) — ou usar a gravacao/transcricao nativa da propria plataforma de
-reuniao para a sua parte.
-
-## Requisitos por sistema operacional
-
-- **Windows**: funciona nativamente (loopback via WASAPI). Nao precisa de
-  driver extra. O que o app grava e sempre o **dispositivo de saida
-  padrao do Windows** (Configuracoes > Som > Saida) — se o app da
-  reuniao/video estiver tocando num dispositivo diferente do padrao do
-  sistema, o app nao vai captar nada.
-- **Linux (PulseAudio ou PipeWire com pipewire-pulse)**: funciona
-  nativamente, usando a fonte "monitor" do dispositivo de saida padrao.
-  Em distros com PipeWire, garanta que o `pipewire-pulse` esta ativo.
-- **macOS**: o CoreAudio nao tem loopback nativo. Instale um dispositivo de
-  audio virtual, como o [BlackHole](https://github.com/ExistentialAudio/BlackHole)
-  e selecione-o como saida de audio padrao (ou crie um "Multi-Output
-  Device" no Audio MIDI Setup para continuar ouvindo pelas caixas
-  normalmente enquanto grava).
-
-## Instalacao
+**Manual:**
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-# ou: pip install -e .
+python webui.py
 ```
 
-(No Windows, `iniciar.bat` faz esses 3 passos sozinho — nao precisa
-digitar nada disso se for usar o painel.)
-
-Na primeira execucao, o `faster-whisper` baixa o modelo escolhido
-automaticamente (requer internet nessa primeira vez; depois fica em cache
-local e carrega offline, sem depender de internet de novo).
-
-## Uso
+Também dá para usar só a linha de comando, sem o painel:
 
 ```bash
-python -m meeting_transcriber --output reuniao-2026-08-12.md --model small --language pt
+python -m meeting_transcriber --output reuniao.md --model small --language pt \
+  --capture-system --capture-microphone
 ```
 
-Deixe rodando durante a reuniao. Para encerrar, pressione `Ctrl+C` — a
-gravacao para, os blocos pendentes terminam de ser transcritos, e o `.md`
-e finalizado automaticamente. O botao "Parar" do painel faz o mesmo
-shutdown gracioso (sinaliza o processo, espera ele finalizar sozinho, e so
-usa encerramento forcado como ultimo recurso se ele nao responder).
+`Ctrl+C` encerra graciosamente: o bloco em andamento termina de ser
+salvo/transcrito antes do processo fechar. Veja `python -m meeting_transcriber --help`
+para todas as opções (modelo, dispositivo de áudio, preset de transcrição
+ao vivo, etc.).
 
-### Opcoes principais
+### Requisitos de áudio por sistema operacional
 
-| Opcao | Padrao | Descricao |
-|---|---|---|
-| `-o, --output` | `transcricao.md` | Caminho do arquivo Markdown de saida |
-| `--title` | `Transcricao de reuniao` | Titulo no topo do markdown |
-| `--model` | `small` | Tamanho do modelo Whisper: `tiny`, `base`, `small`, `medium`, `large-v3` (maior = mais preciso e mais lento) |
-| `--device` | `cpu` | `cpu` ou `cuda` (se tiver GPU NVIDIA compativel) |
-| `--language` | `pt` | Codigo do idioma (`pt`, `en`, ...) ou `auto` para deteccao automatica |
-| `--chunk-seconds` | `300` | Duracao de cada bloco de gravacao/transcricao, em segundos |
-| `--no-keep-audio` | desligado | Por padrao os `.wav` de cada bloco ficam salvos (rede de seguranca para reprocessar manualmente um bloco que falhou); esta opcao apaga cada bloco logo apos transcrever com sucesso |
-| `--work-dir` | pasta temporaria | Onde salvar os blocos de audio |
-| `--meeting-dir` | nenhum | Pasta de sessao persistente (`data/meetings/<id>`) onde o progresso e salvo em `state.json`, permitindo detectar e recuperar a sessao se o processo for interrompido. O painel (`webui.py`) sempre usa isso; pelo terminal e opcional. Ver `docs/RECOVERY.md` |
-| `--resume MEETING_DIR` | nenhum | Nao grava audio novo: so reprocessa os blocos pendentes/com falha de uma sessao existente e finaliza |
+- **Windows**: nativo (WASAPI) — o que este projeto foi desenvolvido e
+  testado. Sem driver extra.
+- **Linux (PulseAudio/PipeWire)**: loopback via fonte "monitor" — não
+  testado nesta sessão de desenvolvimento.
+- **macOS**: sem loopback nativo; requer um dispositivo virtual como o
+  [BlackHole](https://github.com/ExistentialAudio/BlackHole) — não
+  testado nesta sessão.
 
-Se a transcricao de algum bloco falhar (ex.: modelo travou, chunk corrompido),
-a sessao **nao para**: o erro fica registrado no `.md` e o `.wav` daquele
-bloco e preservado (mesmo com `--no-keep-audio`) para voce reprocessar
-manualmente depois (ou, se a sessao usou `--meeting-dir`, com
-`--resume`, automaticamente).
-
-### Escolhendo o modelo
-
-Para reunioes de horas em CPU, `small` costuma ser um bom equilibrio entre
-velocidade e qualidade. Se a transcricao nao estiver acompanhando a
-gravacao em tempo real, tente `base` ou `tiny`. Com GPU (`--device cuda`),
-`medium` ou `large-v3` ficam viaveis.
-
-## Formato do Markdown gerado
-
-```markdown
-# Transcricao de reuniao
-
-- **Data/hora de inicio:** 2026-08-12 14:00:00
-- **Modelo Whisper:** small
-- **Idioma:** pt
-
-## Transcricao
-
-**[00:00:03]** Bom dia a todos, vamos comecar a reuniao...
-
-**[00:00:11]** Sobre o topico anterior...
-
----
-
-*Duracao total gravada: 01:32:47*
-```
-
-## Sessoes e recuperacao
-
-Toda reuniao iniciada pelo painel ganha uma pasta em
-`data/meetings/<id>/` com o audio de cada bloco (`chunks/`) e o estado da
-sessao (`metadata.json`/`state.json`). Se o processo cair no meio (queda de
-energia, crash), o painel detecta isso sozinho na proxima vez que abrir e
-oferece "Reprocessar" — sem apagar nada. Detalhes em `docs/RECOVERY.md`.
-
-## Estrutura do projeto
-
-```
-src/meeting_transcriber/
-  audio_capture.py    # acha e abre o dispositivo de saida padrao em modo loopback
-  recorder.py          # thread de gravacao: fatia o audio em blocos e enfileira
-  transcriber.py        # carrega o Whisper e transcreve cada bloco (.wav -> texto)
-  markdown_writer.py    # escreve o .md incrementalmente (cabecalho, blocos, rodape)
-  session.py             # modelo de sessao persistente (pasta por reuniao, recuperacao)
-  validation.py           # validacao das entradas vindas da API do painel
-  settings.py              # configuracoes locais do app (pasta raiz das reunioes)
-  folder_dialog.py          # seletor nativo de pasta (tkinter, com fallback)
-  cli.py                   # ponto de entrada `python -m meeting_transcriber`,
-                            # junta gravacao + transcricao + escrita num loop so
-  __main__.py              # so chama cli.main()
-webui.py                 # servidor local (stdlib) que liga/desliga o cli.py
-                          # como subprocesso e serve o painel
-index.html                # interface do painel (sem framework, so fetch())
-iniciar.bat               # launcher de um clique: venv + deps + abre o painel
-tests/                     # testes da logica pura (sem precisar de microfone real)
-docs/                       # auditoria, arquitetura, recuperacao, seguranca, roadmap
-```
-
-## Rodando os testes
-
-Os testes cobrem a logica pura (formatacao do markdown, particionamento de
-audio em blocos com microfone falso, sessao/recuperacao, validacao da API,
-hardening HTTP do painel, e o loop principal de ponta a ponta com Whisper
-falso) — nao exigem microfone nem placa de som real, nem baixar nenhum
-modelo:
+## Testes
 
 ```bash
 pip install pytest
 pytest
 ```
+
+Mais de 600 testes, majoritariamente com dublês (fakes) de hardware de
+áudio, relógio e Whisper — não exigem microfone, placa de som real, nem
+baixar nenhum modelo. Um subconjunto separado (`test_*_hardware.py`) usa
+hardware de áudio real quando disponível e é pulado automaticamente
+quando não há dispositivo de áudio no ambiente (ex.: CI). Ver
+`docs/TESTING.md` para a estratégia completa.
+
+## Privacidade
+
+Áudio e transcrições nunca saem da sua máquina. O único tráfego de rede
+é o download do modelo Whisper (uma vez, via Hugging Face Hub) — depois
+disso o app funciona 100% offline. Nenhum dado é enviado a nenhum
+serviço de terceiros; não há telemetria.
+
+## Estrutura do projeto
+
+```
+src/meeting_transcriber/
+  cli.py                 # ponto de entrada: junta captura + transcrição + escrita
+  recorder.py            # thread de gravação (blocos duráveis)
+  transcriber.py         # transcrição durável (Whisper -> .md)
+  markdown_writer.py     # escrita incremental do .md
+  session.py             # modelo de sessão persistente + recuperação
+  validation.py          # validação das entradas da API do painel
+  settings.py            # configurações locais do app
+  folder_dialog.py       # seletor nativo de pasta
+  whisper_config.py      # presets de modelo + detecção segura de CUDA
+  audio/                 # dispositivos, captura dupla, mixer, níveis (Fase C)
+  scheduling/            # agendamento de gravações (Fase C.1)
+  live/                  # transcrição ao vivo de baixa latência (Fase D)
+  storage/               # histórico/busca em SQLite (Fase E)
+  export/                # exportação markdown/txt/json/srt/vtt (Fase I)
+webui.py                 # servidor HTTP local (stdlib) que serve o painel e a API
+index.html               # interface ativa do painel (sem framework)
+frontend/                # migração para React em preparação (Fase F, não ativa)
+iniciar.bat              # launcher de um clique
+tests/                   # suite de testes (fakes + hardware real quando disponível)
+docs/                    # arquitetura, API, fases, segurança, pendências
+```
+
+## Estado atual
+
+| Fase | Status |
+|---|---|
+| A — Auditoria | Concluída |
+| B — Storage, sessões, recovery | Concluída |
+| C — Áudio (sistema + microfone) | Concluída |
+| C.1 — Agendamento de gravações | Concluída (sem UI; sem iniciar com o app fechado) |
+| D — Transcrição quase em tempo real | Núcleo concluído |
+| E — SQLite + histórico | Escopo reduzido, funcional |
+| F — Frontend React | Toolchain + cliente tipado prontos; sem telas de produto |
+| G — Inteligência (resumo/tarefas/decisões) | Não iniciada |
+| H — Diarização | Versão leve (rótulo por canal, não por voz) |
+| I — Exportações | Markdown/TXT/JSON/SRT/VTT concluídos; DOCX/PDF/instalador não |
+
+Detalhe completo, incluindo o que cada fase deliberadamente deixou de
+fora, em `docs/PENDENCIAS.md` e `docs/ROADMAP.md`.
+
+## Roadmap
+
+Ver `docs/ROADMAP.md` (histórico de fases) e `docs/PENDENCIAS.md`
+(pendências priorizadas P0-P3).

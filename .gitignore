@@ -8,8 +8,21 @@ __pycache__/
 /transcricao*.md
 /teste*.md
 
-# reunioes gravadas (audio + estado de sessao) — dados privados do usuario
+# reunioes gravadas (audio + estado de sessao) — dados privados do usuario,
+# inclui data/meetings.db (Fase E) e data/schedules.json (Fase C.1)
 /data/
+
+# pasta de reunioes real escolhida pelo usuario nesta maquina (fica FORA
+# de /data/ de proposito, ver settings.py) -- nunca deveria ser commitada
+/Eletrica/
+
+# arquivos .md soltos na raiz sao anotacoes pessoais do usuario (workspace
+# incidental desta maquina, nao fazem parte do codigo do produto) -- so os
+# docs do proprio projeto que vivem na raiz (nao em docs/) sao excecao.
+/*.md
+!/README.md
+!/CHANGELOG.md
+!/CONTRIBUTING.md
 
 # frontend React (Fase F, preview arquitetural) — build artifacts e deps
 /frontend/node_modules/

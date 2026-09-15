@@ -19,42 +19,61 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
       da API — o path traversal que existia nele foi eliminado por
       construcao. Ver `docs/ARCHITECTURE.md`, `docs/RECOVERY.md`,
       `docs/SECURITY.md`.
-- [ ] **Fase C — Audio.** Captura de microfone + loopback do sistema
-      simultaneamente (canais separados), selecao de dispositivo, medidor de
-      nivel de audio na interface, checagem de saude do audio antes de
-      iniciar a sessao.
-- [ ] **Fase D — Transcricao quase ao vivo.** Separar janela de transcricao
-      "quase em tempo real" da persistencia do chunk completo; fila e
-      backlog de transcricao visiveis na interface; abstracao de engine
-      Whisper (presets, modo avancado, deteccao de CUDA indisponivel).
-- [ ] **Fase E — SQLite + historico.** Persistencia estruturada
-      (`meetings`, `meeting_segments`, `audio_chunks`, ...), tela de
-      historico de reunioes, busca textual.
-- [ ] **Fase F — Migracao do frontend para React.** `index.html` +
-      JavaScript puro e substituido por React + TypeScript + Vite +
-      Tailwind CSS (sem Next.js — nao ha necessidade de SSR/rotas
-      server-side num app local-first controlado por backend Python).
-      Design system, Dashboard, Nova reuniao, Gravacao, Historico, Tela da
-      reuniao, Configuracoes. So comeca depois de C/D/E porque a API vai
-      crescer bastante nessas fases — construir telas de produto antes
-      significaria refazer boa parte do trabalho depois. **Preparacao
-      arquitetural ja iniciada** (permitido pela missao mesmo antes da fase
-      comecar de fato): `frontend/` contem o toolchain funcionando
-      (Vite + React 19 + TypeScript + Tailwind v4, `npm run build` verificado)
-      e um cliente HTTP tipado (`src/services/api.ts`,
-      `src/types/api.ts`) para o contrato **real** atual da API — nao e o
-      frontend ativo ainda; `index.html`/`webui.py` continuam sendo a
-      interface do produto ate a paridade funcional ser demonstrada. Ver
-      `frontend/README.md`.
-- [ ] **Fase G — Inteligencia.** Pipeline desacoplado de resumo, decisoes,
-      tarefas e topicos — funcionando sem exigir nenhuma IA generativa
-      configurada; arquitetura plugavel para engines futuras (Ollama,
-      OpenAI, Anthropic, Gemini).
-- [ ] **Fase H — Diarizacao.** Planejada sem acoplar a stack inteira a uma
-      biblioteca especifica; documentar a decisao tecnica antes de
-      implementar.
-- [ ] **Fase I — Exportacoes + empacotamento.** TXT/JSON/SRT/VTT (e depois
-      DOCX/PDF); instalador Windows de um clique.
+- [x] **Fase C — Áudio.** Captura de microfone + loopback do sistema
+      simultaneamente (canais separados), seleção de dispositivo, medidor de
+      nível de áudio (RMS, SSE), checagem de saúde do áudio antes de
+      iniciar a sessão. Ver `docs/API.md`.
+- [x] **Fase C.1 — Agendamento de gravações.** Schedules com recorrência
+      (once/daily/weekdays/weekly/custom_days), início/fim automático,
+      preflight, detecção de conflito, "missed"/"failed" com tolerância,
+      início/parada manual, persistência atômica em JSON. Motor movido a
+      tick (nunca `sleep()` calculado por duração). **Sem UI** ainda (fica
+      pra Fase F) e **sem Nível 2** (Windows Task Scheduler pra iniciar com
+      o app fechado — documentado como pendência). Ver `docs/SCHEDULING.md`.
+- [x] **Fase D — Transcrição quase ao vivo** (núcleo). Janelas de baixa
+      latência (8s, sobreposição de 1,5s) separadas dos chunks duráveis
+      (30-120s); segmentos provisórios substituídos pelos definitivos por
+      intervalo de tempo; deduplicação determinística por sobreposição de
+      texto; backlog LIVE/PROCESSING/BEHIND observável; presets de modelo
+      (FAST/BALANCED/ACCURATE/MAXIMUM) com fallback seguro de CUDA. Captura
+      nunca depende da velocidade do Whisper (testado). Ver
+      `docs/LIVE_TRANSCRIPTION.md`.
+- [x] **Fase E — SQLite + histórico** (escopo reduzido, documentado).
+      `meetings`/`meeting_segments` com migrations versionadas, importação
+      idempotente do filesystem, busca (FTS5 com fallback `LIKE`), listagem
+      paginada/filtrada, soft delete. **Não fez**: migrar `schedules.json`
+      pra SQLite, tabelas de `action_items`/`decisions`/`topics`/`speakers`/
+      `transcription_jobs` (dependem de fases G/H não implementadas). Ver
+      `docs/DATABASE.md`.
+- [~] **Fase F — Migração do frontend para React.** Toolchain funcionando
+      (Vite + React 19 + TypeScript + Tailwind v4, `npm run build`
+      verificado) e cliente HTTP tipado (`frontend/src/services/api.ts`,
+      `frontend/src/types/api.ts`) cobrindo **todo** o contrato real atual
+      (status/settings/recovery + áudio C + agendamento C.1 + transcrição
+      ao vivo D + histórico/export E). **Nenhuma tela de produto foi
+      construída ainda** (Dashboard/Nova reunião/Gravação/Histórico/
+      Agendamentos/Configurações) — `index.html`/`webui.py` continuam
+      sendo a interface real e ativa. Próximo passo concreto documentado em
+      `docs/PENDENCIAS.md`/`docs/HANDOFF_PROXIMA_SESSAO.md`.
+- [ ] **Fase G — Inteligência.** Não implementada. Arquitetura plugável
+      (provider de resumo/decisões/tarefas/tópicos, Ollama/OpenAI/
+      Anthropic/Gemini opcionais) fica documentada como próximo passo, não
+      código — ver `docs/PENDENCIAS.md`.
+- [~] **Fase H — Diarização** (versão leve). Rótulo de speaker por CANAL
+      (`Você` = microfone, `Áudio da reunião` = sistema, `Reunião` = ambos)
+      aplicado na importação pro histórico (Fase E) — nunca um nome de
+      pessoa inventado. Diarização de verdade (distinguir vozes dentro do
+      mesmo canal) não implementada.
+- [x] **Fase I — Exportações** (parcial). Markdown/TXT/JSON/SRT/VTT,
+      gerados sob demanda a partir do histórico (Fase E), sem gravar em
+      disco. **Não fez**: DOCX/PDF (explicitamente opcional/condicionado a
+      tempo na missão), empacotamento Windows de um clique (PyInstaller/
+      Nuitka — `iniciar.bat` continua sendo o fluxo de início real e
+      funcional).
+
+Legenda: `[x]` concluída, `[~]` parcial (ver a nota da fase), `[ ]` não
+iniciada. Nenhuma fase marcada `[x]` significa "100% do escopo original da
+missão" — cada uma documenta explicitamente o que ficou de fora.
 
 ## Definition of Done da V2 (resumo)
 
@@ -66,3 +85,8 @@ tudo local, sem servico pago obrigatorio, sem depender de internet pro uso
 normal. A interface (React, Fase F) so substitui o painel HTML atual depois
 de demonstrar paridade funcional completa — nenhum recurso existente pode
 desaparecer durante a migracao.
+
+**Estado real (ver `docs/PENDENCIAS.md` para o detalhe completo):** tudo
+acima está feito, exceto "gerar resumo/tarefas/decisões" (Fase G, não
+implementada) e a própria interface React (Fase F: toolchain e cliente
+tipado prontos, telas de produto ainda não construídas).
