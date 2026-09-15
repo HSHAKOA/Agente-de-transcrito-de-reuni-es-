@@ -1,4 +1,4 @@
-import { Calendar, CircleDot, FolderOpen, HardDrive, History, Search } from "lucide-react";
+import { Calendar, CircleDot, FolderOpen, HardDrive, History, Search, Settings as SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Card } from "../components/Card";
 import { formatCountdown, useCountdown } from "../hooks/useCountdown";
@@ -182,9 +182,17 @@ interface DashboardProps {
   onViewRecording: () => void;
   onViewSchedules: () => void;
   onNewMeeting: () => void;
+  onViewSettings: () => void;
 }
 
-export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSchedules, onNewMeeting }: DashboardProps) {
+export function Dashboard({
+  status,
+  onSelectMeeting,
+  onViewRecording,
+  onViewSchedules,
+  onNewMeeting,
+  onViewSettings,
+}: DashboardProps) {
   const { settings } = useSettingsInfo();
   const connected = status !== null;
 
@@ -205,6 +213,13 @@ export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSche
               + Nova reunião
             </button>
           )}
+          <button
+            onClick={onViewSettings}
+            aria-label="Configurações"
+            className="text-neutral-500 transition-colors hover:text-neutral-300"
+          >
+            <SettingsIcon className="size-4" />
+          </button>
         </div>
       </div>
 

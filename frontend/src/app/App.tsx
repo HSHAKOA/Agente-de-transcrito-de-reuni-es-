@@ -7,6 +7,7 @@ import { NewMeeting } from "../pages/NewMeeting";
 import { Recording } from "../pages/Recording";
 import { ScheduleForm } from "../pages/ScheduleForm";
 import { Schedules } from "../pages/Schedules";
+import { Settings } from "../pages/Settings";
 import type { Schedule } from "../types/api";
 
 type View =
@@ -15,26 +16,25 @@ type View =
   | { name: "recording" }
   | { name: "schedules" }
   | { name: "new-meeting" }
-  | { name: "schedule-form"; existing?: Schedule };
+  | { name: "schedule-form"; existing?: Schedule }
+  | { name: "settings" };
 
 /**
- * A Fase F ganhou três telas de produto de verdade (Dashboard, Detalhe
- * da Reunião, Gravação -- ver `pages/`) -- não é mais só um preview de
- * conectividade. `useBackendStatus` vive aqui (não em cada tela) porque
- * TODAS as telas precisam saber se há uma gravação ativa (pra Dashboard
- * mostrar o banner, pra decidir se Gravação pode ser exibida) -- uma só
- * fonte de polling, nunca um `useBackendStatus()` duplicado por tela.
+ * A Fase F ganhou todas as telas nomeadas na missão (Dashboard, Nova
+ * Reunião, Gravação, Detalhe da Reunião, Agendamentos + criar/editar,
+ * Configurações -- ver `pages/`). `useBackendStatus` vive aqui (não em
+ * cada tela) porque TODAS as telas precisam saber se há uma gravação
+ * ativa -- uma só fonte de polling, nunca um `useBackendStatus()`
+ * duplicado por tela.
  *
- * Navegação por `useState` simples de propósito: poucas telas hoje, um
- * router de verdade (`react-router`) só se justifica quando Nova
- * Reunião/Agendamentos/Configurações também existirem (ver
- * docs/PENDENCIAS.md).
+ * Navegação por `useState` simples de propósito -- um router de verdade
+ * (`react-router`) não trouxe valor suficiente pro número de telas atual
+ * (ver docs/PENDENCIAS.md se isso mudar).
  *
- * Ainda assim, esta interface é SOMENTE LEITURA pra a maior parte das
- * ações -- só "Parar reunião" (Recording) chama de verdade o backend
- * pra mudar algo; iniciar gravação, criar agendamento e escolher pasta
- * continuam exigindo o painel real em `index.html` por enquanto (ver
- * docs/ROADMAP.md, Fase F).
+ * Já é possível criar, gravar, acompanhar ao vivo, parar, ver, exportar
+ * e agendar uma reunião inteiramente por aqui -- mas `index.html`
+ * continua sendo a interface de referência até a paridade funcional
+ * completa ser demonstrada de ponta a ponta (ver docs/ROADMAP.md, Fase F).
  */
 export function App() {
   const { status } = useBackendStatus();
@@ -91,6 +91,8 @@ export function App() {
         />
       )}
 
+      {view.name === "settings" && <Settings onBack={() => setView({ name: "dashboard" })} />}
+
       {view.name === "dashboard" && (
         <Dashboard
           status={status}
@@ -98,6 +100,7 @@ export function App() {
           onViewRecording={() => setView({ name: "recording" })}
           onViewSchedules={() => setView({ name: "schedules" })}
           onNewMeeting={() => setView({ name: "new-meeting" })}
+          onViewSettings={() => setView({ name: "settings" })}
         />
       )}
     </div>
