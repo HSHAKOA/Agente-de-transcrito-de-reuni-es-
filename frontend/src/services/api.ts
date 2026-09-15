@@ -14,8 +14,19 @@
 
 import type {
   ActionResult,
+  AudioConfig,
+  AudioDevicesResponse,
+  AudioTestResult,
+  CreateScheduleRequest,
+  ExportFormat,
   FolderActionResult,
+  ImportMeetingsResult,
+  LiveTranscriptionSnapshot,
+  MeetingDetailResponse,
+  MeetingsListResponse,
   RecoveryResponse,
+  ScheduleActionResult,
+  SchedulesResponse,
   SettingsInfo,
   StartMeetingRequest,
   StatusResponse,
@@ -66,6 +77,47 @@ export const api = {
   setMeetingsRootManually: (path: string) =>
     postJson<FolderActionResult>("/api/settings/meetings-root", { path }),
   openFolder: (path: string) => postJson<ActionResult>("/api/open-folder", { path }),
+
+  // Fase C: dispositivos de audio
+  getAudioDevices: () => getJson<AudioDevicesResponse>("/api/audio/devices"),
+  getAudioConfig: () => getJson<AudioConfig>("/api/audio/config"),
+  setAudioConfig: (body: Partial<AudioConfig>) => postJson<AudioConfig>("/api/audio/config", body),
+  testAudio: (body?: Partial<AudioConfig>) => postJson<AudioTestResult>("/api/audio/test", body),
+  getAudioLevels: () => getJson<Record<string, unknown>>("/api/audio/levels"),
+  /** URL pronta pra abrir com `new EventSource(...)` -- nunca chamada via fetch. */
+  audioLevelsStreamUrl: () => "/api/audio/levels/stream",
+
+  // Fase D: transcricao ao vivo
+  getLiveTranscription: () => getJson<LiveTranscriptionSnapshot>("/api/transcription/live"),
+  transcriptionStreamUrl: () => "/api/transcription/stream",
+
+  // Fase C.1: agendamento de gravacoes
+  getSchedules: () => getJson<SchedulesResponse>("/api/schedules"),
+  createSchedule: (body: CreateScheduleRequest) => postJson<ScheduleActionResult>("/api/schedules", body),
+  updateSchedule: (id: string, body: CreateScheduleRequest) =>
+    postJson<ScheduleActionResult>(`/api/schedules/${encodeURIComponent(id)}`, body),
+  cancelSchedule: (id: string) => postJson<ScheduleActionResult>(`/api/schedules/${encodeURIComponent(id)}/cancel`),
+  startScheduleNow: (id: string) =>
+    postJson<ActionResult>(`/api/schedules/${encodeURIComponent(id)}/start-now`),
+  ignoreMissedSchedule: (id: string) =>
+    postJson<ActionResult>(`/api/schedules/${encodeURIComponent(id)}/ignore-missed`),
+
+  // Fase E: historico e busca
+  getMeetings: (params?: { limit?: number; offset?: number; status?: string; q?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    if (params?.status) search.set("status", params.status);
+    if (params?.q) search.set("q", params.q);
+    const query = search.toString();
+    return getJson<MeetingsListResponse>(`/api/meetings${query ? `?${query}` : ""}`);
+  },
+  getMeetingDetail: (id: string) => getJson<MeetingDetailResponse>(`/api/meetings/${encodeURIComponent(id)}`),
+  importMeetings: () => postJson<ImportMeetingsResult>("/api/meetings/import"),
+  deleteMeeting: (id: string) => postJson<ActionResult>(`/api/meetings/${encodeURIComponent(id)}/delete`),
+  /** URL pronta pra abrir/baixar diretamente (ex.: `window.open(...)`) -- gera o arquivo na hora, nunca fica salvo. */
+  meetingExportUrl: (id: string, format: ExportFormat) =>
+    `/api/meetings/${encodeURIComponent(id)}/export?format=${format}`,
 };
 
 export { ApiError };
