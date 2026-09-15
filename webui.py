@@ -45,6 +45,9 @@ SETTINGS_PATH = ROOT / "data" / "settings.json"
 sys.path.insert(0, str(SRC))
 
 from meeting_transcriber import folder_dialog, settings, validation  # noqa: E402
+from meeting_transcriber.audio import devices as audio_devices  # noqa: E402
+from meeting_transcriber.audio.models import AudioError  # noqa: E402
+from meeting_transcriber.audio_capture import SAMPLE_RATE  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
     MeetingSession,
@@ -70,6 +73,10 @@ _DRAIN_CAP_BYTES = MAX_BODY_BYTES * 4  # teto pra drenar um corpo rejeitado sem 
 # So avanca de estagio se o anterior nao surtir efeito dentro do timeout.
 GRACEFUL_TIMEOUT_SECONDS = 30.0
 TERMINATE_TIMEOUT_SECONDS = 5.0
+
+# frequencia do stream SSE do medidor de audio -- dentro da faixa de 5-15
+# atualizacoes/s pedida (0.15s ~= 6.7 Hz).
+LEVELS_STREAM_INTERVAL_SECONDS = 0.15
 
 logger = logging.getLogger("meeting_transcriber.webui")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -345,6 +352,21 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
 
     keep_audio = bool(opts.get("keep_audio", True))
 
+    # fontes de audio: usa a preferencia salva pra qualquer campo que o
+    # cliente nao mandar explicitamente (permite tanto "usa o que ja
+    # estava configurado" quanto "troca so pra esta reuniao").
+    audio_prefs = settings.get_audio_preferences(SETTINGS_PATH)
+    capture_system = bool(opts.get("capture_system", audio_prefs["capture_system"]))
+    capture_microphone = bool(opts.get("capture_microphone", audio_prefs["capture_microphone"]))
+    system_device_id = opts.get("system_device_id", audio_prefs["system_device_id"])
+    microphone_device_id = opts.get("microphone_device_id", audio_prefs["microphone_device_id"])
+    for value in (system_device_id, microphone_device_id):
+        if value is not None and (not isinstance(value, str) or len(value) > 200):
+            return False, "Identificador de dispositivo de audio invalido."
+
+    if not capture_system and not capture_microphone:
+        return False, "Selecione pelo menos uma fonte de audio (computador e/ou microfone)."
+
     with state_lock:
         if state["proc"] is not None:
             return False, "Ja existe uma gravacao em andamento."
@@ -366,9 +388,24 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         if not health.ok:
             return False, health.message
 
+        # health check de audio ANTES de subir o subprocesso: da pra dar
+        # feedback imediato na UI em vez do usuario ter que abrir o log
+        # pra descobrir que o dispositivo escolhido nao existe mais
+        # (cli.py faz a MESMA checagem de novo antes de gravar -- e a
+        # autoridade final, mas aqui evita a viagem de ida e volta).
+        if capture_system:
+            audio_health = audio_devices.check_device_health("output", system_device_id, SAMPLE_RATE)
+            if not audio_health.ok:
+                return False, f"Audio do computador indisponivel: {audio_health.message}"
+        if capture_microphone:
+            audio_health = audio_devices.check_device_health("input", microphone_device_id, SAMPLE_RATE)
+            if not audio_health.ok:
+                return False, f"Microfone indisponivel: {audio_health.message}"
+
         meeting_id = new_meeting_id(title=title)
         meeting_dir = MEETINGS_DIR / meeting_id
         output_path = meeting_dir / "transcript.md"
+        levels_path = meeting_dir / "levels.json"
 
         cmd = [
             _python_executable(),
@@ -389,9 +426,19 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
             str(chunk_seconds),
             "--meeting-dir",
             str(meeting_dir),
+            "--levels-file",
+            str(levels_path),
         ]
         if not keep_audio:
             cmd.append("--no-keep-audio")
+        if not capture_system:
+            cmd.append("--no-capture-system")
+        if capture_microphone:
+            cmd.append("--capture-microphone")
+        if system_device_id:
+            cmd.extend(["--system-device", system_device_id])
+        if microphone_device_id:
+            cmd.extend(["--microphone-device", microphone_device_id])
 
         proc, error = _launch(cmd)
         if error:
@@ -405,6 +452,16 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         state["finished_at"] = None
         state["exit_code"] = None
         state["log"].clear()
+
+    # lembra a escolha pra proxima reuniao (mission, secao "Configuracoes":
+    # ultimo microfone, ultima saida, capturar sistema/microfone: sim/nao).
+    settings.set_audio_preferences(
+        SETTINGS_PATH,
+        capture_system=capture_system,
+        capture_microphone=capture_microphone,
+        system_device_id=system_device_id,
+        microphone_device_id=microphone_device_id,
+    )
 
     _log(f"[painel] iniciado: {' '.join(cmd)}")
     threading.Thread(target=_reader_thread, args=(proc,), daemon=True).start()
@@ -549,6 +606,91 @@ def get_recovery() -> dict:
     return {"sessions": sessions}
 
 
+def get_audio_devices() -> dict:
+    """GET /api/audio/devices -- DTOs serializaveis (ver
+    audio.models.AudioDevice.to_dict), nunca objetos internos do backend
+    de audio. Em caso de falha do proprio motor de audio (ex.: nenhum
+    servico de audio disponivel), devolve o erro estruturado em vez de
+    deixar a excecao subir (ver audio.models.AudioError.to_dict)."""
+    try:
+        return audio_devices.list_devices()
+    except AudioError as exc:
+        return exc.to_dict()
+
+
+def get_audio_config() -> dict:
+    """GET /api/audio/config -- preferencias salvas: ultimo microfone,
+    ultima saida, quais fontes capturar por padrao na proxima reuniao."""
+    return settings.get_audio_preferences(SETTINGS_PATH)
+
+
+def set_audio_config(body: dict) -> dict:
+    """PUT /api/audio/config -- atualiza so as chaves reconhecidas e
+    devolve a configuracao resultante. Nao valida se o dispositivo salvo
+    ainda existe (isso so importa na hora de gravar/testar de verdade,
+    onde `check_device_health` ja cobre isso com uma mensagem clara)."""
+    updates = {}
+    if "capture_system" in body:
+        updates["capture_system"] = bool(body["capture_system"])
+    if "capture_microphone" in body:
+        updates["capture_microphone"] = bool(body["capture_microphone"])
+    for key in ("system_device_id", "microphone_device_id"):
+        if key in body:
+            value = body[key]
+            updates[key] = str(value) if value else None
+    return settings.set_audio_preferences(SETTINGS_PATH, **updates)
+
+
+def test_audio(body: dict) -> dict:
+    """POST /api/audio/test -- testa dispositivo(s) de verdade (abre um
+    stream curto, mede o nivel por ~1s, fecha) SEM criar nenhuma reuniao.
+    Corpo opcional: {capture_system, capture_microphone, system_device_id,
+    microphone_device_id} -- qualquer campo omitido usa a preferencia
+    salva atualmente. Sincrono de proposito (a missao permite; um teste de
+    ~1-2s por fonte nao justifica um job em background com polling)."""
+    if state["proc"] is not None:
+        return {"ok": False, "message": "Nao e possivel testar audio com uma gravacao em andamento."}
+
+    prefs = settings.get_audio_preferences(SETTINGS_PATH)
+    capture_system = bool(body.get("capture_system", prefs["capture_system"]))
+    capture_microphone = bool(body.get("capture_microphone", prefs["capture_microphone"]))
+    system_device_id = body.get("system_device_id", prefs["system_device_id"])
+    microphone_device_id = body.get("microphone_device_id", prefs["microphone_device_id"])
+
+    if not capture_system and not capture_microphone:
+        return {"ok": False, "message": "Selecione pelo menos uma fonte de audio para testar."}
+
+    results = {}
+    ok = True
+    if capture_system:
+        health = audio_devices.check_device_health("output", system_device_id, SAMPLE_RATE, probe_seconds=1.0)
+        results["system"] = health.to_dict()
+        ok = ok and health.ok
+    if capture_microphone:
+        health = audio_devices.check_device_health("input", microphone_device_id, SAMPLE_RATE, probe_seconds=1.0)
+        results["microphone"] = health.to_dict()
+        ok = ok and health.ok
+
+    return {"ok": ok, "results": results}
+
+
+def get_audio_levels() -> dict:
+    """GET /api/audio/levels -- ultimo snapshot de nivel de audio da
+    gravacao ATIVA (se houver), escrito periodicamente pelo subprocesso em
+    `<meeting_dir>/levels.json` (ver cli.py:_levels_writer_loop). Devolve
+    {} se nao ha gravacao rodando ou o arquivo ainda nao existe/esta no
+    meio de uma escrita -- nunca uma excecao por isso."""
+    with state_lock:
+        meeting_dir = state["meeting_dir"]
+    if not meeting_dir:
+        return {}
+    levels_path = Path(meeting_dir) / "levels.json"
+    try:
+        return json.loads(levels_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 _RESUME_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/resume$")
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -594,6 +736,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_recovery())
             elif self.path == "/api/settings":
                 self._send_json(get_settings_info())
+            elif self.path == "/api/audio/devices":
+                self._send_json(get_audio_devices())
+            elif self.path == "/api/audio/config":
+                self._send_json(get_audio_config())
+            elif self.path == "/api/audio/levels":
+                self._send_json(get_audio_levels())
+            elif self.path == "/api/audio/levels/stream":
+                self._serve_levels_stream()
             else:
                 self.send_error(404)
         except Exception:
@@ -660,6 +810,15 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg = open_folder(body.get("path"))
                 self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
                 return
+            if self.path == "/api/audio/config":
+                # atualizacao de configuracao: POST, nao PUT, pra ficar
+                # consistente com o resto desta API (toda mutacao aqui e
+                # POST, ex.: /api/settings/meetings-root) -- ver docs/API.md.
+                self._send_json(set_audio_config(body))
+                return
+            if self.path == "/api/audio/test":
+                self._send_json(test_audio(body))
+                return
             match = _RESUME_PATH_RE.match(self.path)
             if match:
                 ok, msg = resume_meeting(match.group(1))
@@ -682,6 +841,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_levels_stream(self, interval: float = LEVELS_STREAM_INTERVAL_SECONDS) -> None:
+        """GET /api/audio/levels/stream -- Server-Sent Events: um evento
+        `data: {...}` sempre que o nivel mudar, checado a cada `interval`
+        segundos. Escolhido em vez de polling HTTP comum (a missao pede
+        5-15 atualizacoes/s pro medidor, bem mais frequente que os 1.5s de
+        `/api/status`) e em vez de WebSocket (o fluxo e so backend->
+        frontend; SSE cobre isso com `http.server` puro, sem biblioteca
+        nova -- ver docs/API.md pra o raciocinio completo).
+
+        Conexao dedicada e de vida longa: termina sozinha quando o cliente
+        desconecta (a proxima escrita falha) ou quando o processo do
+        painel encerra. `SinglePortServer.daemon_threads = True` garante
+        que uma dessas conexoes nunca impede o servidor de encerrar.
+        """
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            last_payload = None
+            while True:
+                payload = json.dumps(get_audio_levels())
+                if payload != last_payload:
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_payload = payload
+                time.sleep(interval)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass  # cliente fechou a conexao -- fim normal do stream, nao um erro
+
 
 class SinglePortServer(ThreadingHTTPServer):
     # Por padrao o http.server liga allow_reuse_address=True, que no
@@ -692,6 +884,10 @@ class SinglePortServer(ThreadingHTTPServer):
     # Desligando aqui, o segundo `python webui.py` falha ao subir em vez
     # de virar um zumbi silencioso.
     allow_reuse_address = False
+    # Uma conexao de vida longa (o stream SSE do medidor de audio) nunca
+    # pode impedir o servidor de encerrar -- threads daemon morrem junto
+    # com o processo principal.
+    daemon_threads = True
 
 
 def main() -> None:

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import webui
+from meeting_transcriber.audio.models import AudioHealthResult
 
 
 class FakePopen:
@@ -103,6 +104,18 @@ def _isolated_webui(tmp_path, monkeypatch):
         return proc
 
     monkeypatch.setattr(webui.subprocess, "Popen", _fake_popen)
+
+    # start_transcriber/test_audio agora testam o(s) dispositivo(s) de
+    # audio de verdade antes de prosseguir -- sem isto, cada teste bateria
+    # no backend de audio REAL desta maquina. Devolve "saudavel" por
+    # padrao; testes especificos de falha de dispositivo sobrescrevem isto.
+    def _fake_health(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        return AudioHealthResult(
+            ok=True, code=None, message="OK", device_id=device_id or f"default-{kind}",
+            device_name=f"Dispositivo {kind} de teste", level=0.1,
+        )
+
+    monkeypatch.setattr(webui.audio_devices, "check_device_health", _fake_health)
 
     with webui.state_lock:
         webui.state.update(
@@ -558,6 +571,175 @@ def test_open_folder_rejects_invalid_input(_isolated_webui):
     for bad in (None, "", 123, []):
         ok, _ = webui.open_folder(bad)
         assert not ok
+
+
+# -- audio (Fase C) ------------------------------------------------------
+
+def test_get_audio_devices_returns_serializable_dtos(_isolated_webui, monkeypatch):
+    def _fake_list_devices(backend=None):
+        return {
+            "inputs": [{"id": "mic-1", "name": "Microfone Falso", "is_default": True}],
+            "outputs": [{"id": "spk-1", "name": "Alto-falantes Falsos", "is_default": True, "loopback_supported": True}],
+        }
+
+    monkeypatch.setattr(webui.audio_devices, "list_devices", _fake_list_devices)
+    result = webui.get_audio_devices()
+    assert result["inputs"][0]["id"] == "mic-1"
+    assert result["outputs"][0]["loopback_supported"] is True
+
+
+def test_get_audio_devices_returns_structured_error_on_backend_failure(_isolated_webui, monkeypatch):
+    from meeting_transcriber.audio.models import AudioError, AudioErrorCode
+
+    def _boom(backend=None):
+        raise AudioError(AudioErrorCode.BACKEND_UNAVAILABLE, "Motor de audio indisponivel.")
+
+    monkeypatch.setattr(webui.audio_devices, "list_devices", _boom)
+    result = webui.get_audio_devices()
+    assert result["error"]["code"] == AudioErrorCode.BACKEND_UNAVAILABLE
+
+
+def test_get_audio_config_defaults(_isolated_webui):
+    config = webui.get_audio_config()
+    assert config == {
+        "capture_system": True,
+        "capture_microphone": False,
+        "system_device_id": None,
+        "microphone_device_id": None,
+    }
+
+
+def test_set_audio_config_updates_only_given_fields(_isolated_webui):
+    webui.set_audio_config({"capture_microphone": True, "microphone_device_id": "mic-1"})
+    config = webui.get_audio_config()
+    assert config["capture_microphone"] is True
+    assert config["microphone_device_id"] == "mic-1"
+    assert config["capture_system"] is True  # nao mexido, continua o padrao
+
+
+def test_set_audio_config_clears_device_id_with_empty_string(_isolated_webui):
+    webui.set_audio_config({"system_device_id": "spk-1"})
+    webui.set_audio_config({"system_device_id": ""})
+    assert webui.get_audio_config()["system_device_id"] is None
+
+
+def test_test_audio_refuses_when_no_source_selected(_isolated_webui):
+    result = webui.test_audio({"capture_system": False, "capture_microphone": False})
+    assert result["ok"] is False
+
+
+def test_test_audio_refuses_during_active_recording(_isolated_webui):
+    webui.start_transcriber({})
+    result = webui.test_audio({})
+    assert result["ok"] is False
+    assert "andamento" in result["message"].lower()
+
+
+def test_test_audio_returns_results_per_source(_isolated_webui, monkeypatch):
+    def _fake_health(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        return AudioHealthResult(ok=True, code=None, message="OK", device_id=f"{kind}-id", level=0.4)
+
+    monkeypatch.setattr(webui.audio_devices, "check_device_health", _fake_health)
+    result = webui.test_audio({"capture_system": True, "capture_microphone": True})
+    assert result["ok"] is True
+    assert result["results"]["system"]["device_id"] == "output-id"
+    assert result["results"]["microphone"]["device_id"] == "input-id"
+
+
+def test_test_audio_reports_failure_for_unhealthy_device(_isolated_webui, monkeypatch):
+    from meeting_transcriber.audio.models import AudioErrorCode
+
+    def _fake_health(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        return AudioHealthResult(ok=False, code=AudioErrorCode.DEVICE_NOT_FOUND, message="Nao encontrado")
+
+    monkeypatch.setattr(webui.audio_devices, "check_device_health", _fake_health)
+    result = webui.test_audio({"capture_system": True, "capture_microphone": False})
+    assert result["ok"] is False
+    assert result["results"]["system"]["code"] == AudioErrorCode.DEVICE_NOT_FOUND
+
+
+def test_get_audio_levels_empty_when_not_recording(_isolated_webui):
+    assert webui.get_audio_levels() == {}
+
+
+def test_get_audio_levels_reads_current_meeting_levels_file(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    (meeting_dir / "levels.json").write_text('{"system": {"level": 0.5}}', encoding="utf-8")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+    assert webui.get_audio_levels() == {"system": {"level": 0.5}}
+
+
+def test_get_audio_levels_tolerates_missing_or_malformed_file(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+    assert webui.get_audio_levels() == {}  # arquivo nao existe ainda -- nao e erro
+
+    (meeting_dir / "levels.json").write_text("{ nao e json valido", encoding="utf-8")
+    assert webui.get_audio_levels() == {}  # escrita atomica no meio -- tambem nao e erro
+
+
+# -- start_transcriber: fontes de audio -----------------------------------
+
+def test_start_transcriber_rejects_when_no_audio_source_selected(_isolated_webui):
+    ok, msg = webui.start_transcriber({"capture_system": False, "capture_microphone": False})
+    assert not ok
+    assert _isolated_webui == []
+
+
+def test_start_transcriber_rejects_when_system_health_check_fails(_isolated_webui, monkeypatch):
+    from meeting_transcriber.audio.models import AudioErrorCode
+
+    def _unhealthy(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        return AudioHealthResult(ok=False, code=AudioErrorCode.DEVICE_NOT_FOUND, message="Sumiu")
+
+    monkeypatch.setattr(webui.audio_devices, "check_device_health", _unhealthy)
+    ok, msg = webui.start_transcriber({})
+    assert not ok
+    assert "Sumiu" in msg
+    assert _isolated_webui == []
+
+
+def test_start_transcriber_passes_capture_flags_to_subprocess(_isolated_webui):
+    ok, msg = webui.start_transcriber({"capture_system": True, "capture_microphone": True, "microphone_device_id": "mic-9"})
+    assert ok, msg
+    cmd = _isolated_webui[0].args
+    assert "--capture-microphone" in cmd
+    assert "--microphone-device" in cmd
+    assert "mic-9" in cmd
+    assert "--no-capture-system" not in cmd
+
+
+def test_start_transcriber_passes_no_capture_system_when_disabled(_isolated_webui):
+    ok, msg = webui.start_transcriber({"capture_system": False, "capture_microphone": True})
+    assert ok, msg
+    cmd = _isolated_webui[0].args
+    assert "--no-capture-system" in cmd
+
+
+def test_start_transcriber_persists_audio_preferences(_isolated_webui):
+    webui.start_transcriber({"capture_microphone": True, "microphone_device_id": "mic-7"})
+    config = webui.get_audio_config()
+    assert config["capture_microphone"] is True
+    assert config["microphone_device_id"] == "mic-7"
+
+
+def test_start_transcriber_rejects_oversized_device_id(_isolated_webui):
+    ok, msg = webui.start_transcriber({"system_device_id": "x" * 500})
+    assert not ok
+    assert _isolated_webui == []
+
+
+def test_start_transcriber_passes_levels_file(_isolated_webui):
+    ok, msg = webui.start_transcriber({})
+    assert ok, msg
+    cmd = _isolated_webui[0].args
+    assert "--levels-file" in cmd
+    idx = cmd.index("--levels-file")
+    assert cmd[idx + 1].endswith("levels.json")
 
 
 # -- get_status / get_recovery -----------------------------------------------
