@@ -648,7 +648,9 @@ def test_audio(body: dict) -> dict:
     microphone_device_id} -- qualquer campo omitido usa a preferencia
     salva atualmente. Sincrono de proposito (a missao permite; um teste de
     ~1-2s por fonte nao justifica um job em background com polling)."""
-    if state["proc"] is not None:
+    with state_lock:
+        recording_active = state["proc"] is not None
+    if recording_active:
         return {"ok": False, "message": "Nao e possivel testar audio com uma gravacao em andamento."}
 
     prefs = settings.get_audio_preferences(SETTINGS_PATH)
