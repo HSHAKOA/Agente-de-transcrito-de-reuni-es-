@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -247,6 +248,13 @@ class MeetingSession:
         with self._lock:
             self._state["status"] = STATUS_RECORDING
             self._state["started_at"] = _now_iso()
+            # guardado so como sinal de seguranca extra pro recovery
+            # (ver is_pid_running/find_meeting_dir_across_roots): nunca usado
+            # pra "adotar" um processo automaticamente, so pra evitar dois
+            # processos escrevendo nos mesmos arquivos ao mesmo tempo caso o
+            # painel tente reprocessar uma sessao cujo processo original
+            # ainda pareca estar vivo.
+            self._state["pid"] = os.getpid()
             self._save_state()
 
     def mark_chunk_recorded(
@@ -367,3 +375,68 @@ def list_sessions(base_dir: Path) -> List[dict]:
             continue
     sessions.sort(key=lambda s: s.get("created_at") or "", reverse=True)
     return sessions
+
+
+def find_meeting_dir_across_roots(meeting_id: str, roots: List[Path]) -> Optional[Path]:
+    """Procura `<raiz>/<meeting_id>/state.json` em cada raiz conhecida, na
+    ordem dada, e devolve a primeira pasta encontrada (ou None). Usado pelo
+    `/api/meetings/<id>/resume` pra localizar uma sessao que pode ter sido
+    deixada numa raiz anterior, sem variar o schema da API por causa disso
+    -- so o `meeting_id` continua sendo o identificador publico.
+
+    So confia em `meeting_id` ja validado pelo chamador (regex de
+    `validation.validate_meeting_id`); nao faz nenhuma varredura alem de
+    checar essa pasta especifica em cada raiz.
+    """
+    for root in roots:
+        try:
+            if not root.exists():
+                continue
+            candidate = root / meeting_id
+            if (candidate / "state.json").exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def is_pid_running(pid: Optional[int]) -> Optional[bool]:
+    """Melhor esforco, so Windows, sem dependencia nova (usa `ctypes` pra
+    chamar a API do Win32 diretamente): tenta abrir um handle pro processo
+    com esse PID e checar se ele ainda esta ativo.
+
+    Devolve True/False quando consegue verificar, ou None quando nao e
+    possivel verificar com confianca (plataforma nao suportada, PID
+    ausente, erro inesperado abrindo o handle) -- **None nunca deve ser
+    tratado como "esta rodando"**, so como "nao sei dizer".
+
+    IMPORTANTE: isto NAO confirma que o processo com esse PID e realmente
+    a mesma sessao de gravacao -- PIDs sao reciclados pelo sistema
+    operacional, e um PID "vivo" pode ser um processo completamente
+    diferente que por acaso reaproveitou o numero. Por isso este resultado
+    e usado APENAS como uma camada extra de seguranca antes de reprocessar
+    (evitar dois processos escrevendo nos mesmos arquivos ao mesmo tempo)
+    -- nunca para decidir "adotar"/religar uma sessao automaticamente. Ver
+    docs/RECOVERY.md, secao "Sessao/processo orfao".
+    """
+    if pid is None or sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False  # processo nao existe (ou sem permissao -- tratamos como "nao esta rodando")
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return None
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None

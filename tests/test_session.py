@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,8 @@ from meeting_transcriber.session import (
     STATUS_PROCESSING,
     STATUS_RECORDING,
     MeetingSession,
+    find_meeting_dir_across_roots,
+    is_pid_running,
     is_valid_meeting_id,
     list_sessions,
     mark_interrupted_sessions,
@@ -274,3 +278,63 @@ def test_list_sessions_orders_most_recent_first(tmp_path: Path):
     )
     sessions = list_sessions(tmp_path)
     assert [s["meeting_id"] for s in sessions] == [second.state["meeting_id"], first.state["meeting_id"]]
+
+
+# -- pid tracking (recovery, B.1) ---------------------------------------
+
+def test_mark_recording_stores_current_pid(tmp_path: Path):
+    session = MeetingSession.create(base_dir=tmp_path, title="T", model="small", language="pt", device="cpu")
+    session.mark_recording()
+    assert session.state["pid"] == os.getpid()
+
+
+# -- find_meeting_dir_across_roots (recovery multi-root, B.1) -----------
+
+def test_find_meeting_dir_across_roots_finds_in_second_root(tmp_path: Path):
+    root_a = tmp_path / "A"
+    root_b = tmp_path / "B"
+    session = MeetingSession.create(
+        base_dir=root_b, title="T", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-aaaaaa",
+    )
+    found = find_meeting_dir_across_roots("20260101-000000-aaaaaa", [root_a, root_b])
+    assert found == session.meeting_dir
+
+
+def test_find_meeting_dir_across_roots_returns_none_when_not_found(tmp_path: Path):
+    root_a = tmp_path / "A"
+    root_a.mkdir()
+    assert find_meeting_dir_across_roots("nao-existe-em-lugar-nenhum", [root_a]) is None
+
+
+def test_find_meeting_dir_across_roots_skips_missing_root_without_raising(tmp_path: Path):
+    missing_root = tmp_path / "nao-existe"
+    real_root = tmp_path / "real"
+    session = MeetingSession.create(
+        base_dir=real_root, title="T", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-bbbbbb",
+    )
+    found = find_meeting_dir_across_roots("20260101-000000-bbbbbb", [missing_root, real_root])
+    assert found == session.meeting_dir
+
+
+# -- is_pid_running (recovery safety net, B.1) ---------------------------
+
+@pytest.mark.skipif(sys.platform != "win32", reason="is_pid_running so tem implementacao real no Windows")
+def test_is_pid_running_true_for_current_process():
+    assert is_pid_running(os.getpid()) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="is_pid_running so tem implementacao real no Windows")
+def test_is_pid_running_false_for_almost_certainly_unused_pid():
+    # PID acima do limite pratico do Windows -- extremamente improvavel de existir
+    assert is_pid_running(999_999) is False
+
+
+def test_is_pid_running_none_for_missing_pid():
+    assert is_pid_running(None) is None
+
+
+def test_is_pid_running_none_on_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert is_pid_running(os.getpid()) is None
