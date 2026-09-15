@@ -22,16 +22,19 @@ ponta e está testado.
 ## P1 — reduzem a experiência ou a superfície de produto
 
 1. **Telas de produto React (Fase F)** — em andamento.
-   - Feito: **Dashboard** (`frontend/src/pages/Dashboard.tsx`) — status de
-     conexão, próxima gravação agendada com contagem regressiva real,
-     histórico recente com busca funcional, pasta/espaço livre. Somente
-     leitura; verificado contra o `webui.py` real (proxy do Vite
-     round-tripando `/api/status`/`/api/schedules`/`/api/meetings`).
-   - Falta: Nova Reunião (formulário + preflight), Gravação (nível de
-     áudio + transcrição ao vivo via SSE + parar), Histórico completo
-     (paginação, filtro, exportar), Agendamentos (criar/editar/cancelar),
-     Configurações. `index.html` continua sendo a única interface capaz
-     de iniciar/parar uma gravação de verdade.
+   - Feito: **Dashboard** (status, próxima gravação com contagem
+     regressiva, busca + histórico recente, pasta/espaço livre);
+     **Detalhe da reunião** (transcrição completa, export em 5 formatos,
+     abas Resumo/Tarefas/Decisões marcadas honestamente como "não
+     processado"); **Gravação** (nível de áudio via SSE, transcrição ao
+     vivo via SSE, cronômetro, "Parar reunião" — primeira ação de
+     escrita real do preview). Verificado contra o `webui.py` real
+     (round-trip via proxy do Vite, incluindo os dois streams SSE com
+     nenhuma gravação ativa).
+   - Falta: Nova Reunião (formulário + preflight + escolha de
+     dispositivo/pasta), Agendamentos (criar/editar/cancelar/iniciar
+     agora), Configurações. `index.html` continua sendo a única interface
+     capaz de INICIAR uma gravação ou criar um agendamento.
 
 2. **Migração de `schedules.json` para SQLite**
    - Impacto: nenhum na prática (o scheduler funciona corretamente em
