@@ -6,7 +6,7 @@ escondido: cada item também aparece na fase correspondente
 acompanhadas como [Issues no GitHub](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues)
 (agrupadas, não uma por item):
 
-- [#1](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/1) — Telas de produto React (P1)
+- [#1](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/1) — Telas de produto React (P1) — **fechada**: as 5 falhas P1 da auditoria pós-missão foram corrigidas; resta só Histórico paginado (ver abaixo)
 - [#2](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/2) — Migração de schedules + Task Scheduler (P1)
 - [#3](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/3) — Meeting Intelligence (P2)
 - [#4](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/4) — Diarização completa + empacotamento (P2)
@@ -21,28 +21,49 @@ ponta e está testado.
 
 ## P1 — reduzem a experiência ou a superfície de produto
 
-1. **Telas de produto React (Fase F)** — todas as 7 telas nomeadas na
-   missão (F.3) existem e funcionam contra o backend real: Dashboard,
-   Nova Reunião (formulário completo + testar áudio + iniciar de
-   verdade), Gravação (níveis + transcrição ao vivo via SSE + parar),
-   Detalhe da Reunião (export em 5 formatos, abas Resumo/Tarefas/
-   Decisões marcadas "não processado"), Agendamentos + criar/editar
-   (recorrência completa), Configurações. O ciclo inteiro criar → gravar
-   → ver → exportar → agendar é navegável em React.
-   - **Ainda falta pra "paridade funcional completa" de verdade**: uma
-     tela de Histórico dedicada com paginação (hoje só a busca +
-     últimas 5 reuniões do Dashboard); testes automatizados de frontend
-     (nenhum framework de teste — vitest/testing-library — foi
-     instalado ainda, ver F.17); exercitar de ponta a ponta os
-     caminhos de ESCRITA (criar reunião, criar agendamento) com uma
-     gravação real — verificado só via tipos (`tsc`) e a suíte de
-     backend já existente, nunca clicando de verdade nesses botões
-     contra dados reais, pra não criar artefatos persistentes
-     (agendamentos, gravações) sem o usuário pedir.
-   - `index.html`/`webui.py` continuam sendo a interface de referência
-     até esses pontos serem fechados.
+Uma auditoria independente pós-missão (`auditoria_gemini.md`) encontrou 5
+problemas P1 reais que impediam considerar o produto pronto pra demo,
+todos confirmados no código e corrigidos numa sessão dedicada:
 
-2. **Migração de `schedules.json` para SQLite**
+1. ~~Bug de navegação ejetava o usuário da tela de Gravação~~ **CORRIGIDO**
+   — `App.tsx` checava `status.running` do poll ANTERIOR no mesmo render
+   em que `NewMeeting` mudava a view, voltando pro Dashboard antes do
+   status novo chegar. Corrigido com um estado de transição explícito
+   (`recording.phase: "starting" | "active"`), sem timeout arbitrário.
+2. ~~Reuniões terminadas nunca eram indexadas no SQLite~~ **CORRIGIDO**
+   — `_reader_thread` agora chama `import_meeting` automaticamente
+   quando o processo de gravação termina; antes disso o histórico só
+   era populado se alguém chamasse `POST /api/meetings/import`
+   manualmente, o que nenhuma tela fazia.
+3. ~~`webui.py` não servia o build do React~~ **CORRIGIDO** — React é
+   agora a interface ativa e padrão, servida direto por `webui.py`
+   quando `frontend/dist/` existe (fallback SPA pra rotas client-side,
+   nunca intercepta `/api/*`). `index.html` legado só é servido se o
+   build não existir.
+4. ~~Leituras do SQLite sem lock~~ **CORRIGIDO** — só escritas eram
+   protegidas; leituras concorrentes na mesma conexão compartilhada
+   causavam `sqlite3.InterfaceError` sob carga real (reproduzido antes
+   de corrigir). Agora toda operação do `MeetingRepository` é
+   serializada.
+5. ~~Duplo clique em "Parar" podia disparar shutdown concorrente~~
+   **CORRIGIDO** — `state["stopping"]` explícito recusa (409) um
+   segundo `POST /api/stop` enquanto o primeiro ainda está em
+   andamento; o React mostra "Finalizando reunião..." em vez de
+   assumir que a gravação parou assim que o endpoint responde 200.
+
+**Ainda falta pra "paridade funcional completa" de verdade** (Fase F):
+uma tela de Histórico dedicada com paginação (hoje só a busca + últimas
+5 reuniões do Dashboard); cobertura de teste automatizado mais ampla no
+frontend (vitest cobre o ciclo de vida da gravação, formulários
+críticos e o hook de SSE — não cobre ainda `Schedules.tsx`/
+`Settings.tsx`/`Recording.tsx` isoladamente); exercitar os formulários
+de escrita (Nova Reunião, agendamento) clicando de verdade num navegador
+contra o backend real — verificado por testes automatizados (vitest com
+backend mockado, e um smoke test HTTP end-to-end com o servidor real e
+um subprocesso de gravação simulado), nunca clicando manualmente numa
+aba de navegador aberta pra essa finalidade nesta sessão.
+
+6. **Migração de `schedules.json` para SQLite**
    - Impacto: nenhum na prática (o scheduler funciona corretamente em
      JSON), mas duas fontes de persistência coexistem.
    - Próximo passo: quando o schema SQLite crescer para incluir
@@ -50,7 +71,7 @@ ponta e está testado.
      migrar com o mesmo padrão de `storage/import_filesystem.py`
      (idempotente, nunca apaga o JSON até a migração ser confirmada).
 
-3. **Windows Task Scheduler (Nível 2 do agendamento)**
+7. **Windows Task Scheduler (Nível 2 do agendamento)**
    - Impacto: um agendamento só dispara se o painel já estiver aberto no
      horário. Documentado explicitamente em `docs/SCHEDULING.md`, nunca
      escondido.
@@ -61,29 +82,33 @@ ponta e está testado.
 
 ## P2 — features avançadas não iniciadas
 
-4. **Meeting Intelligence (Fase G)** — resumo/tarefas/decisões/tópicos.
+8. **Meeting Intelligence (Fase G)** — resumo/tarefas/decisões/tópicos.
    Nenhum código escrito; arquitetura de provider plugável documentada
-   em `docs/FLOWCHARTS.md` (diagrama 7).
-5. **Diarização completa (Fase H)** — hoje só rótulo por canal (`Você`/
+   em `docs/FLOWCHARTS.md` (diagrama 9).
+9. **Diarização completa (Fase H)** — hoje só rótulo por canal (`Você`/
    `Áudio da reunião`), nunca por voz individual dentro do mesmo canal.
-6. **Empacotamento Windows (PyInstaller/Nuitka)** — `iniciar.bat`
-   continua sendo o fluxo real e funcional; um `.exe` de um clique não
-   foi avaliado.
-7. **DOCX/PDF** — só Markdown/TXT/JSON/SRT/VTT foram implementados.
+10. **Empacotamento Windows (PyInstaller/Nuitka)** — `iniciar.bat`
+    continua sendo o fluxo real e funcional; um `.exe` de um clique não
+    foi avaliado.
+11. **DOCX/PDF** — só Markdown/TXT/JSON/SRT/VTT foram implementados.
 
 ## P3 — polimento
 
-8. Sem endpoint de "restaurar" uma reunião soft-deletada (precisa ir
-   direto ao repositório hoje).
-9. `merge_overlapping_text` (Fase D) é lexical, não semântico — uma
-   reformulação da IA entre janelas adjacentes não seria detectada como
-   duplicata (caso raro na prática).
-10. Backlog de transcrição ao vivo (`LIVE`/`PROCESSING`/`BEHIND`) usa
+12. Sem endpoint de "restaurar" uma reunião soft-deletada (precisa ir
+    direto ao repositório hoje).
+13. `merge_overlapping_text` (Fase D) é lexical, não semântico — uma
+    reformulação da IA entre janelas adjacentes não seria detectada como
+    duplicata (caso raro na prática).
+14. Backlog de transcrição ao vivo (`LIVE`/`PROCESSING`/`BEHIND`) usa
     limites fixos (1s/30s), não adaptativos ao hardware da máquina.
-11. Sem teste de fluxo completo (SSE) automatizado para reconexão de
+15. Sem teste de fluxo completo (SSE) automatizado para reconexão de
     cliente no meio de uma gravação — coberto só pelo tratamento de
     exceção no servidor (`BrokenPipeError`/etc.), não por um teste
     dedicado de reconexão.
+16. `frontend/dist/` não é versionado (`.gitignore`) -- um checkout novo
+    do repositório precisa rodar `cd frontend && npm run build` uma vez
+    antes de `iniciar.bat` mostrar o React (senão cai pro painel legado,
+    que continua funcional). Documentado em `docs/APRESENTACAO_PROFESSOR.md`.
 
 ## Licença
 

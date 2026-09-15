@@ -52,7 +52,7 @@ manter um **histórico pesquisável** de tudo que já foi gravado.
 
 ```mermaid
 flowchart TD
-    U[Usuário] --> UI[Painel local /index.html]
+    U[Usuário] --> UI[Painel React - frontend/dist]
     UI --> M{Início}
     M -->|Agora| START[Iniciar gravação]
     M -->|Agendado| SCHED[Scheduler]
@@ -76,7 +76,8 @@ flowchart TD
     LIVE --> WHISPERFAST[Whisper - prévia rápida]
 
     WHISPER --> MD[transcript.md]
-    WHISPER --> DB[(SQLite - histórico)]
+    MD -->|processo termina, automático| IMPORT[Auto-import]
+    IMPORT --> DB[(SQLite - histórico)]
     WHISPERFAST --> SSE[SSE - texto ao vivo]
 
     SSE --> UI
@@ -85,7 +86,7 @@ flowchart TD
 ```
 
 Fluxogramas detalhados de cada etapa (gravação, encerramento gracioso,
-recuperação, agendamento, schema do banco) estão em
+recuperação, agendamento, schema do banco, servir o React) estão em
 `docs/FLOWCHARTS.md`.
 
 ## Arquitetura
@@ -94,19 +95,23 @@ recuperação, agendamento, schema do banco) estão em
   HTTP em `webui.py` não usa Flask/FastAPI). `faster-whisper` para
   transcrição, `soundcard` para captura de áudio (WASAPI no Windows),
   `sqlite3` (stdlib) para o histórico.
-- **Frontend ativo**: `index.html` + JavaScript puro (`fetch`/SSE), servido
-  pelo próprio `webui.py`. Uma migração para React + TypeScript + Vite +
-  Tailwind está em preparação (`frontend/`) mas ainda não é a interface
-  ativa — ver "Estado atual".
+- **Frontend ativo**: React 19 + TypeScript + Vite + Tailwind CSS v4
+  (`frontend/`), servido pelo próprio `webui.py` a partir do build de
+  produção (`frontend/dist/`, gerado por `npm run build`). O painel
+  legado (`index.html` + JavaScript puro na raiz do projeto) continua
+  existindo só como fallback automático para quando o build do React não
+  foi gerado — nunca precisa ser mantido manualmente em paridade a partir
+  de agora.
 - **Local-first**: nenhuma dependência de nuvem obrigatória; o único
   acesso à internet é o download do modelo Whisper na primeira vez.
 
 ## Fluxo completo
 
 ```
-Usuário → Painel (index.html) → API local (webui.py) → Session Manager
-   → Audio Pipeline (sistema + microfone) → Whisper (ao vivo + durável)
-   → transcript.md + SQLite → Histórico/Busca/Exportação
+Usuário → Painel React (frontend/dist, servido por webui.py) → API local
+   (webui.py) → Session Manager → Audio Pipeline (sistema + microfone)
+   → Whisper (ao vivo + durável) → transcript.md → (auto-import ao
+   terminar) → SQLite → Histórico/Busca/Exportação
 ```
 
 Agendamentos entram pelo Scheduler (`meeting_transcriber.scheduling`),
@@ -115,14 +120,19 @@ que dispara a mesma sequência de início no horário programado.
 ## Tecnologias
 
 Python 3.9+, `faster-whisper` (CTranslate2), `soundcard`, `sqlite3`,
-`tzdata`/`tzlocal`, `numpy`, `soundfile`. Frontend em preparação: React
-19, TypeScript, Vite, Tailwind CSS v4 (sem Next.js).
+`tzdata`/`tzlocal`, `numpy`, `soundfile`. Frontend: React 19, TypeScript,
+Vite, Tailwind CSS v4 (sem Next.js).
 
 ## Como executar
 
 **Modo fácil (Windows, sem terminal):** dê dois cliques em `iniciar.bat`.
 Na primeira vez ele cria o ambiente virtual e instala as dependências
-sozinho; depois abre direto o painel em `http://127.0.0.1:8765`.
+sozinho; depois abre direto o painel (React) em `http://127.0.0.1:8765`.
+Se o build do React (`frontend/dist/`) não existir no seu checkout — por
+exemplo, um clone limpo do repositório sem `frontend/dist/` versionado —
+rode `cd frontend && npm install && npm run build` uma vez antes; até lá,
+o painel legado (`index.html`) é servido automaticamente como fallback,
+sem quebrar nada.
 
 **Manual:**
 
@@ -194,9 +204,11 @@ src/meeting_transcriber/
   live/                  # transcrição ao vivo de baixa latência (Fase D)
   storage/               # histórico/busca em SQLite (Fase E)
   export/                # exportação markdown/txt/json/srt/vtt (Fase I)
-webui.py                 # servidor HTTP local (stdlib) que serve o painel e a API
-index.html               # interface ativa do painel (sem framework)
-frontend/                # migração para React em preparação (Fase F, não ativa)
+webui.py                 # servidor HTTP local (stdlib) que serve o painel (React ou legado) e a API
+index.html               # painel legado (fallback quando frontend/dist/ não existe)
+frontend/                # frontend React ativo (Fase F) -- `npm run build` gera dist/,
+                          # servido automaticamente por webui.py; dist/ não é versionado
+                          # (.gitignore), rode o build antes de demonstrar num checkout novo
 iniciar.bat              # launcher de um clique
 tests/                   # suite de testes (fakes + hardware real quando disponível)
 docs/                    # arquitetura, API, fases, segurança, pendências
@@ -211,8 +223,8 @@ docs/                    # arquitetura, API, fases, segurança, pendências
 | C — Áudio (sistema + microfone) | Concluída |
 | C.1 — Agendamento de gravações | Concluída (sem UI; sem iniciar com o app fechado) |
 | D — Transcrição quase em tempo real | Núcleo concluído |
-| E — SQLite + histórico | Escopo reduzido, funcional |
-| F — Frontend React | 7 telas reais (Dashboard, Nova Reunião, Gravação, Detalhe, Agendamentos, Configurações) — falta Histórico paginado e testes |
+| E — SQLite + histórico | Escopo reduzido, funcional. Indexação **automática** ao final de toda gravação (antes era manual via endpoint, nunca chamado pela UI) |
+| F — Frontend React | Interface **ativa e padrão**, servida por `webui.py`. 7 telas reais (Dashboard, Nova Reunião, Gravação, Detalhe, Agendamentos, Configurações), navegação corrigida (não ejeta mais da tela de Gravação), estado "Finalizando..." explícito ao parar, testes automatizados (vitest). Falta: Histórico paginado |
 | G — Inteligência (resumo/tarefas/decisões) | Não iniciada |
 | H — Diarização | Versão leve (rótulo por canal, não por voz) |
 | I — Exportações | Markdown/TXT/JSON/SRT/VTT concluídos; DOCX/PDF/instalador não |

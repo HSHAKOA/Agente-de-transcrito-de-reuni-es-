@@ -3,6 +3,40 @@
 Resumo por fase/marco (ver `docs/ROADMAP.md` para o detalhe de escopo de
 cada uma e `git log` para o histórico completo de commits).
 
+## Correção pós-auditoria (React pronto para demo)
+
+Uma auditoria independente encontrou 5 problemas P1 que impediam uma
+demonstração confiável apesar do núcleo já estar sólido — todos
+confirmados no código e corrigidos:
+
+- Bug de navegação que ejetava o usuário da tela de Gravação de volta pro
+  Dashboard (corrida entre polling de status e o clique de "Iniciar").
+- Reuniões terminadas agora são indexadas automaticamente no histórico
+  (antes exigia chamar um endpoint manual que nenhuma tela chamava).
+- `webui.py` passa a servir o build de produção do React
+  (`frontend/dist/`) como interface padrão — antes só o painel HTML
+  legado era servido.
+- Leituras do SQLite protegidas contra corrida (antes só escritas
+  tinham lock; reproduzido um `sqlite3.InterfaceError` real sob carga
+  concorrente antes de corrigir).
+- Estado explícito de "parando" no backend: um segundo pedido de parar
+  é recusado enquanto o primeiro ainda está em andamento; a UI mostra
+  "Finalizando reunião..." em vez de assumir que parou na hora.
+
+Também: validação de `Origin` em requests que mudam estado (CSRF
+local), `open_folder` aceitando qualquer raiz de reuniões já conhecida
+(não só a ativa), correção da recorrência semanal do formulário de
+agendamento, fallback de importação quando o caminho do transcript
+ficou desatualizado, e a primeira suíte de testes automatizados do
+frontend (`vitest` + `testing-library`).
+
+## Fase F — Frontend React
+
+- Migração completa da interface pra React 19 + TypeScript + Vite +
+  Tailwind CSS v4: 7 telas (Dashboard, Nova Reunião, Gravação, Detalhe
+  da Reunião, Agendamentos + criar/editar, Configurações) navegáveis de
+  ponta a ponta contra o backend real.
+
 ## Fase I — Exportações (parcial)
 
 - Exportação sob demanda em Markdown, TXT, JSON, SRT e VTT a partir do

@@ -41,24 +41,36 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
 - [x] **Fase E — SQLite + histórico** (escopo reduzido, documentado).
       `meetings`/`meeting_segments` com migrations versionadas, importação
       idempotente do filesystem, busca (FTS5 com fallback `LIKE`), listagem
-      paginada/filtrada, soft delete. **Não fez**: migrar `schedules.json`
-      pra SQLite, tabelas de `action_items`/`decisions`/`topics`/`speakers`/
-      `transcription_jobs` (dependem de fases G/H não implementadas). Ver
-      `docs/DATABASE.md`.
-- [~] **Fase F — Migração do frontend para React.** Toolchain (Vite +
+      paginada/filtrada, soft delete. Indexação **automática** ao final de
+      toda gravação/reprocessamento (`webui.py:_reader_thread` chama
+      `import_meeting` sozinho — correção pós-auditoria, antes disso o
+      banco só era populado se alguém chamasse `POST /api/meetings/import`
+      manualmente, o que a UI nunca fazia sozinha). Leituras concorrentes
+      também protegidas por lock (antes só escritas tinham). **Não fez**:
+      migrar `schedules.json` pra SQLite, tabelas de `action_items`/
+      `decisions`/`topics`/`speakers`/`transcription_jobs` (dependem de
+      fases G/H não implementadas). Ver `docs/DATABASE.md`.
+- [x] **Fase F — Migração do frontend para React.** Toolchain (Vite +
       React 19 + TypeScript + Tailwind v4) e cliente HTTP tipado cobrindo
       **todo** o contrato real atual. **Todas as 7 telas da missão (F.3)
-      construídas**: Dashboard, Nova Reunião (formulário completo,
-      testar áudio, inicia gravações reais), Gravação (níveis de áudio +
-      transcrição ao vivo via SSE, parar), Detalhe da Reunião
-      (transcrição, exportação em 5 formatos), Agendamentos + criar/
-      editar (recorrência completa), Configurações — o ciclo criar →
-      gravar → ver → exportar → agendar já é navegável inteiramente em
-      React. Falta pra paridade completa: tela de Histórico dedicada com
-      paginação, testes automatizados de frontend (nenhum framework
-      instalado ainda), e verificação manual dos formulários de escrita
-      contra dados reais. `index.html`/`webui.py` continuam sendo a
-      interface de referência — ver `docs/PENDENCIAS.md`.
+      construídas** e navegáveis de ponta a ponta: Dashboard, Nova Reunião
+      (formulário completo, testar áudio, inicia gravações reais),
+      Gravação (níveis de áudio + transcrição ao vivo via SSE, parar com
+      estado "Finalizando..." explícito), Detalhe da Reunião (transcrição,
+      exportação em 5 formatos), Agendamentos + criar/editar (recorrência
+      completa, com correção automática de dias múltiplos em "semanal"),
+      Configurações. **React é a interface ativa e padrão**: `webui.py`
+      serve `frontend/dist/` automaticamente (correção pós-auditoria P1-3;
+      antes só existia o painel legado). Bug de navegação que ejetava o
+      usuário da tela de Gravação (P1-1) corrigido com um estado de
+      transição explícito, sem timeout arbitrário. Testes automatizados de
+      componente adicionados (vitest + testing-library), cobrindo o ciclo
+      de vida completo da gravação e os formulários críticos. Falta pra
+      paridade completa: tela de Histórico dedicada com paginação, e
+      exercitar os formulários de escrita contra um navegador real (feito
+      via HTTP simulado/smoke test, nunca clicado numa aba real). `index.html`
+      continua existindo só como fallback quando o build não foi gerado —
+      ver `docs/PENDENCIAS.md`.
 - [ ] **Fase G — Inteligência.** Não implementada. Arquitetura plugável
       (provider de resumo/decisões/tarefas/tópicos, Ollama/OpenAI/
       Anthropic/Gemini opcionais) fica documentada como próximo passo, não
@@ -86,11 +98,14 @@ esta chegando, transcrever quase em tempo real sem perder audio se o Whisper
 atrasar, encerrar sem perder bloco parcial, recuperar sessao interrompida,
 guardar e pesquisar historico, gerar resumo/tarefas/decisoes, exportar —
 tudo local, sem servico pago obrigatorio, sem depender de internet pro uso
-normal. A interface (React, Fase F) so substitui o painel HTML atual depois
-de demonstrar paridade funcional completa — nenhum recurso existente pode
-desaparecer durante a migracao.
+normal. A interface React (Fase F) substituiu o painel HTML legado como
+interface ativa e padrão depois de demonstrar paridade funcional completa
+(7 telas navegáveis de ponta a ponta contra o backend real, servidas pelo
+próprio `webui.py`) — o painel legado continua existindo só como fallback
+automático, nenhum recurso desapareceu na migração.
 
 **Estado real (ver `docs/PENDENCIAS.md` para o detalhe completo):** tudo
 acima está feito, exceto "gerar resumo/tarefas/decisões" (Fase G, não
-implementada) e a própria interface React (Fase F: toolchain e cliente
-tipado prontos, telas de produto ainda não construídas).
+implementada). A interface React está completa e ativa; falta só uma tela
+de Histórico dedicada com paginação para paridade 100% com o que o
+backend já suporta.

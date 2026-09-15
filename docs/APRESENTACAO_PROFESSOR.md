@@ -36,41 +36,74 @@ Um software local que:
 
 ## 4. Arquitetura
 
-Ver `docs/FLOWCHARTS.md` (7 diagramas: visão geral, gravação,
-agendamento, encerramento gracioso, recovery, schema de dados,
-inteligência planejada) e `README.md` para o resumo visual.
+Ver `docs/FLOWCHARTS.md` (9 diagramas: visão geral, gravação,
+agendamento, encerramento gracioso [com o estado "stopping"], recovery,
+schema de dados, servir o React, inteligência planejada) e `README.md`
+para o resumo visual.
 
-## 5. Roteiro de demonstração sugerido
+## 5. Antes de começar (uma vez só, se ainda não tiver feito)
+
+`frontend/dist/` (o build do React) não é versionado no Git
+(`.gitignore` — artefato de build). Se o build do React ainda não existe
+neste checkout, `iniciar.bat` funciona normalmente mas mostra o painel
+legado (`index.html`) em vez do React. Para garantir a interface nova na
+demonstração:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+Depois disso, `iniciar.bat` sempre abre o React automaticamente — não
+precisa repetir esse passo a menos que o código do frontend mude.
+
+## 6. Roteiro de demonstração sugerido
 
 ```
-1. Abrir o painel (iniciar.bat)
-2. Mostrar o dashboard/status
-3. Mostrar os dispositivos de áudio disponíveis (sistema + microfone)
-4. Testar áudio (botão "Testar áudio" — mede e mostra o nível de cada fonte)
-5. Escolher a pasta onde a reunião será salva
-6. Iniciar uma reunião de verdade (sistema + microfone)
-7. Mostrar o áudio sendo capturado (medidor de nível ao vivo)
-8. Mostrar a transcrição aparecendo quase em tempo real
-9. Parar a reunião (mostrar o encerramento gracioso, sem perder nada)
-10. Abrir o histórico e localizar a reunião recém-gravada
-11. Abrir o resultado (transcrição completa) e exportar (ex.: .srt)
-12. (Se estável) Mostrar um agendamento criado e sua contagem regressiva
+1. Abrir iniciar.bat -- o React abre automaticamente no navegador
+2. Mostrar o Dashboard (status de conexão, histórico, pasta ativa)
+3. Clicar em "+ Nova reunião"
+4. Escolher a pasta onde a reunião será salva
+5. Mostrar os dispositivos de áudio disponíveis (sistema + microfone)
+6. Testar áudio (botão "Testar áudio" — mede e mostra o nível de cada fonte)
+7. Iniciar a gravação
+8. Mostrar a tela de Gravação: medidores de nível ao vivo, cronômetro
+9. Mostrar a transcrição aparecendo quase em tempo real
+10. Parar a reunião -- mostrar o estado "Finalizando reunião..." (o
+    encerramento gracioso real leva alguns segundos; a tela NUNCA finge
+    que já parou antes de o backend confirmar)
+11. De volta ao Dashboard: a reunião já aparece sozinha no histórico
+    (indexação automática, sem precisar de nenhum botão de sincronizar)
+12. Abrir a reunião: transcrição completa com timecodes, exportar
+    (ex.: .srt) -- mostrar também as abas Resumo/Tarefas/Decisões
+    marcadas honestamente como "não processado"
+13. Mostrar a tela de Agendamentos e criar um novo (recorrência,
+    contagem regressiva)
+14. (Opcional) Mostrar `docs/FLOWCHARTS.md` pra explicar a arquitetura
 ```
 
 Cada passo acima usa uma funcionalidade **realmente implementada e
-testada** — nenhum passo do roteiro depende de algo simulado.
+testada** — nenhum passo do roteiro depende de algo simulado. O ciclo
+completo (passos 3 a 12) foi verificado por um smoke test automatizado
+de ponta a ponta (servidor real, HTTP real, subprocesso de gravação
+simulado — nunca hardware de áudio real nesse teste específico) antes
+desta sessão ser encerrada; a captura de áudio e a transcrição em si
+(passos 5-9) usam o mesmo caminho já validado com hardware real em
+sessões anteriores (ver `docs/API.md`/`docs/LIVE_TRANSCRIPTION.md`).
 
-## 6. O que NÃO mostrar como pronto
+## 7. O que NÃO mostrar como pronto
 
 - **Resumo/tarefas/decisões automáticos** (Fase G): não implementado.
   Se perguntado, a resposta correta é "arquitetura planejada, não
-  implementada ainda" — nunca simular esse resultado.
+  implementada ainda" — nunca simular esse resultado. A própria tela de
+  Detalhe da Reunião já mostra isso honestamente ("não processado").
 - **Identificação de pessoas por nome** ("João disse...", "Maria
   perguntou..."): não implementado. O sistema hoje só distingue **canal**
   (`Você` vs `Áudio da reunião`), nunca voz individual.
-- **Interface React**: existe um toolchain funcionando e um cliente HTTP
-  tipado, mas nenhuma tela de produto. A interface real e ativa é
-  `index.html`.
+- **Histórico completo com paginação**: hoje o Dashboard só mostra busca
+  + últimas 5 reuniões. Uma tela dedicada de Histórico com paginação de
+  verdade ainda não existe.
 - **Início do agendamento com o app fechado**: hoje o painel precisa
   estar aberto no horário programado (documentado em
   `docs/SCHEDULING.md`).

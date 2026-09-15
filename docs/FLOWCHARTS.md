@@ -1,19 +1,21 @@
 # Fluxogramas
 
-Todos os diagramas abaixo refletem o **código real** implementado nesta
-sessão (verificado por leitura direta de `cli.py`/`webui.py`/`recorder.py`/
-`session.py`/`scheduling/engine.py`/`live/pipeline.py`/`storage/`, não uma
-intenção futura). Onde uma etapa não existe ainda, ela é explicitamente
-marcada como **Planejado**.
+Todos os diagramas abaixo refletem o **código real** implementado até a
+missão de correção pós-auditoria (verificado por leitura direta de
+`cli.py`/`webui.py`/`recorder.py`/`session.py`/`scheduling/engine.py`/
+`live/pipeline.py`/`storage/`/`frontend/src/`, não uma intenção futura).
+Onde uma etapa não existe ainda, ela é explicitamente marcada como
+**Planejado**.
 
 ## 1 — Visão geral
 
 ```mermaid
 flowchart TD
-    U[Usuário] --> UI[index.html - painel ativo]
-    UI -.Fase F, planejado.-> REACT[React]
+    U[Usuário] --> UI[React - frontend/dist]
+    UI -.sem build gerado, fallback.-> LEGACY[index.html legado]
 
     UI --> API[webui.py - API local]
+    LEGACY --> API
 
     API --> SM[Session Manager]
     API --> SCHED[Scheduler]
@@ -22,7 +24,9 @@ flowchart TD
 
     SM --> PIPE[Audio Pipeline]
     PIPE --> WHISPER[Transcrição]
-    WHISPER --> SQLITE[(SQLite)]
+    WHISPER --> MDFILE[transcript.md / state.json]
+    MDFILE -->|processo termina -- automático| IMPORT[Auto-import]
+    IMPORT --> SQLITE[(SQLite)]
     SQLITE --> INTEL[Meeting Intelligence]:::planned
     SQLITE --> EXPORT[Exportações]
     SQLITE --> SEARCH[Histórico e busca]
@@ -32,7 +36,14 @@ flowchart TD
 ```
 
 `Meeting Intelligence` (resumo/tarefas/decisões, Fase G) está tracejado:
-arquitetura planejada, sem implementação ainda.
+arquitetura planejada, sem implementação ainda. **Importante**: o Whisper
+nunca escreve direto no SQLite — ele só escreve `transcript.md`/
+`state.json` no filesystem; o SQLite é populado por uma importação que
+roda **automaticamente** quando o processo de gravação termina
+(`webui.py:_reader_thread`, correção pós-auditoria P1-2) ou manualmente
+via `POST /api/meetings/import` (botão de sincronização, útil para
+reimportar reuniões antigas ou recuperar de uma falha pontual de
+indexação).
 
 ## 2 — Gravação
 
@@ -108,7 +119,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    REQ[Parar solicitado<br/>botão manual OU scheduler no fim da janela] --> SIG[Sinal gracioso<br/>SIGINT / CTRL_BREAK_EVENT]
+    REQ[POST /api/stop<br/>botão manual OU scheduler no fim da janela] --> CHECKSTOP{state stopping<br/>já é true?}
+    CHECKSTOP -->|sim| REJECT[409 - recusado<br/>evita 2ª thread de shutdown concorrente]
+    CHECKSTOP -->|não| SETSTOP[state stopping = true]
+
+    SETSTOP --> SIG[Sinal gracioso<br/>SIGINT / CTRL_BREAK_EVENT]
     SIG --> STOPEVT[stop_event.set]
     STOPEVT --> FINISHBLOCK[Termina o bloco de áudio atual]
     FINISHBLOCK --> PARTIALWAV[Escreve o chunk parcial]
@@ -116,7 +131,10 @@ flowchart TD
     CLOSESTREAMS --> DRAIN[Drena a fila de transcrição pendente]
     DRAIN --> FINALIZEMD[Finaliza transcript.md]
     FINALIZEMD --> MARKSESSION[MeetingSession.mark_completed]
-    MARKSESSION --> DONE2[completed / interrupted se sobrou pendência]
+    MARKSESSION --> READERTHREAD[_reader_thread detecta o processo morto]
+    READERTHREAD --> CLEARSTOP[state proc = None, stopping = false]
+    CLEARSTOP --> AUTOIMPORT[Auto-import no SQLite]
+    AUTOIMPORT --> DONE2[completed / interrupted se sobrou pendência]
 
     SIG -.timeout 30s sem resposta.-> TERM[terminate - exceção]
     TERM -.timeout 5s sem resposta.-> KILL[kill - último recurso]
@@ -127,7 +145,11 @@ flowchart TD
 
 `terminate()`/`kill()` são o caminho de **exceção**, nunca o fluxo normal
 — só acontecem se o processo não responder ao sinal gracioso dentro do
-timeout (ver `webui.py:shutdown_sequence`).
+timeout (ver `webui.py:shutdown_sequence`). O estado `stopping` (correção
+pós-auditoria P1-5) fica `true` do momento em que o pedido é aceito até o
+processo realmente morrer — enquanto isso, um segundo `POST /api/stop` é
+recusado (409) e o React mostra "Finalizando reunião..." em vez de
+assumir que a gravação já parou.
 
 ## 5 — Recovery
 
@@ -154,6 +176,15 @@ flowchart TD
 ```
 
 ## 6 — Dados (SQLite, Fase E)
+
+Entrada no índice: **automática** ao final de toda gravação/reprocessamento
+(`_reader_thread` chama `import_meeting` sozinho quando o processo
+termina, sucesso ou não — correção pós-auditoria P1-2) ou manual via
+`POST /api/meetings/import` (botão "Sincronizar histórico", útil pra
+reimportar reuniões antigas do filesystem ou recuperar de uma falha
+pontual de indexação, que nunca compromete os arquivos reais da reunião
+— só fica registrada em log). `upsert_meeting`/`replace_segments` são
+idempotentes: reimportar a mesma reunião nunca duplica.
 
 ```mermaid
 erDiagram
@@ -193,7 +224,36 @@ Tabelas planejadas e **não implementadas**: `audio_chunks` e
 `topics`, `speakers`/`meeting_speakers` como tabelas de verdade (Fase G/H
 completa).
 
-## 7 — Inteligência (Fase G — planejado, não implementado)
+## 8 — React servido pelo backend
+
+```mermaid
+flowchart TD
+    REQ[Request HTTP] --> HOST{Host permitido?<br/>127.0.0.1/localhost}
+    HOST -->|não| E400[400]
+    HOST -->|sim| ISAPI{Caminho começa<br/>com /api/?}
+
+    ISAPI -->|sim, POST| ORIGIN{Origin permitida?<br/>ou ausente}
+    ORIGIN -->|não| E403[403 - CSRF local]
+    ORIGIN -->|sim/ausente| ROUTE[Roteia pra função da API]
+    ISAPI -->|sim, GET| ROUTE
+
+    ISAPI -->|não| BUILD{frontend/dist/index.html<br/>existe?}
+    BUILD -->|não| LEGACYIDX[Serve index.html legado]
+    BUILD -->|sim| FILEEXISTS{Arquivo existe<br/>em frontend/dist?}
+    FILEEXISTS -->|sim, ex.: /assets/app.js| STATIC[Serve o arquivo estático]
+    FILEEXISTS -->|não, ex.: /agendamentos| SPA[Fallback SPA:<br/>serve index.html do React]
+
+    ROUTE --> E404{Rota /api/*<br/>desconhecida?}
+    E404 -->|sim| E404R[404]
+```
+
+`/api/*` nunca é interceptado pelo fallback de arquivo estático — uma
+rota de API digitada errada continua 404, nunca vira a página do React
+por engano. Guarda contra path traversal em `_serve_frontend_asset`
+(resolve o caminho e confere que continua dentro de `frontend/dist`
+antes de servir).
+
+## 9 — Inteligência (Fase G — planejado, não implementado)
 
 ```mermaid
 flowchart TD
