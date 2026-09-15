@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -170,3 +171,117 @@ def test_search_meetings_handles_special_characters_safely(repo: MeetingReposito
     repo.upsert_meeting(_meeting("m1", title='Titulo com "aspas" e * asterisco'))
     # nao deveria lancar excecao nenhuma, mesmo com sintaxe especial do FTS5
     repo.search_meetings('"aspas" * (parenteses) OR AND NOT -algo')
+
+
+# -- concorrencia real (P1-4 pos-auditoria) -------------------------------
+#
+# `db.py:connect` abre com `check_same_thread=False` porque o painel atende
+# cada request HTTP numa thread propria (ThreadingHTTPServer). A auditoria
+# encontrou que so as ESCRITAS (upsert/replace_segments/soft_delete) tinham
+# um lock -- leituras corriam sem nenhuma serializacao na MESMA conexao
+# compartilhada. Os testes abaixo rodam de verdade com threads reais (nao
+# so leem o codigo e assumem que "parece certo") para pegar exatamente o
+# tipo de falha esporadica que so aparece sob concorrencia real.
+
+
+def _run_concurrently(fns, seconds=0.5):
+    """Roda cada callable em `fns` numa thread propria por `seconds`
+    segundos corridos (chamando repetidamente), coletando qualquer
+    excecao. Duração fixa (não um número fixo de iterações) para dar
+    tempo real de threads se entrelaçarem de verdade."""
+    errors: list = []
+    stop = threading.Event()
+
+    def _wrap(fn):
+        while not stop.is_set():
+            try:
+                fn()
+            except Exception as exc:  # pragma: no cover - so deveria acontecer se o teste falhar
+                errors.append(exc)
+                return
+
+    threads = [threading.Thread(target=_wrap, args=(fn,)) for fn in fns]
+    for t in threads:
+        t.start()
+    stop.wait(seconds)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5)
+    return errors
+
+
+def test_ten_plus_concurrent_reads_never_raise(repo: MeetingRepository):
+    for i in range(5):
+        repo.upsert_meeting(_meeting(f"m{i}"))
+        repo.replace_segments(f"m{i}", [{"start_seconds": 0, "end_seconds": 1, "text": f"segmento {i}"}])
+
+    readers = [
+        (lambda: repo.list_meetings()),
+        (lambda: repo.get_meeting("m0")),
+        (lambda: repo.count_meetings()),
+        (lambda: repo.list_segments("m1")),
+        (lambda: repo.search_meetings("segmento")),
+    ] * 3  # 15 threads lendo ao mesmo tempo
+
+    errors = _run_concurrently(readers)
+    assert errors == []
+
+
+def test_concurrent_read_and_write_never_raise(repo: MeetingRepository):
+    repo.upsert_meeting(_meeting("seed"))
+    counter = {"n": 0}
+    counter_lock = threading.Lock()
+
+    def _write():
+        with counter_lock:
+            counter["n"] += 1
+            n = counter["n"]
+        repo.upsert_meeting(_meeting(f"writer-{n}"))
+
+    def _read():
+        repo.list_meetings()
+        repo.get_meeting("seed")
+        repo.count_meetings()
+
+    errors = _run_concurrently([_write, _write, _read, _read, _read])
+    assert errors == []
+
+
+def test_concurrent_search_and_import_like_workload_never_raises(repo: MeetingRepository):
+    """Simula o cenario real que motivou a correcao: o Dashboard fazendo
+    busca (`search_meetings`) enquanto uma importacao roda em outra thread
+    (`upsert_meeting` + `replace_segments` em sequencia, como
+    `import_meeting` faz de verdade)."""
+    ids = [f"import-{i}" for i in range(5)]
+
+    def _import_like():
+        for meeting_id in ids:
+            repo.upsert_meeting(_meeting(meeting_id, title=f"Reuniao {meeting_id}"))
+            repo.replace_segments(meeting_id, [{"start_seconds": 0, "end_seconds": 1, "text": "pauta da reuniao"}])
+
+    def _search():
+        repo.search_meetings("pauta")
+        repo.list_meetings()
+
+    errors = _run_concurrently([_import_like, _search, _search, _search])
+    assert errors == []
+
+
+def test_dashboard_reads_and_meeting_finalize_never_raise_concurrently(repo: MeetingRepository):
+    """Simula Dashboard consultando `/api/meetings` (leitura) enquanto uma
+    gravacao termina e e indexada (`upsert_meeting`/`replace_segments`) --
+    o cenario exato do bug (P1-2 auto-import + P1-4 concorrencia
+    combinados)."""
+
+    def _finalize_meeting():
+        for i in range(20):
+            meeting_id = f"finalized-{i}"
+            repo.upsert_meeting(_meeting(meeting_id))
+            repo.replace_segments(meeting_id, [{"start_seconds": 0, "end_seconds": 1, "text": "ola"}])
+
+    def _dashboard_poll():
+        repo.list_meetings(limit=5)
+        repo.count_meetings()
+
+    errors = _run_concurrently([_finalize_meeting, _dashboard_poll, _dashboard_poll])
+    assert errors == []

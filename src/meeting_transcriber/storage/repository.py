@@ -1,7 +1,13 @@
 """Camada de repositorio (Fase E, secao E.9): toda leitura/escrita no
 SQLite passa por aqui -- nunca SQL espalhado pela UI/webui.py. Um lock
-proprio serializa escritas (SQLite aceita um escritor por vez; sem isto,
-duas requests HTTP concorrentes podem esbarrar em "database is locked").
+proprio serializa TODO acesso (leitura e escrita) a conexao compartilhada
+(`check_same_thread=False`, ver storage/db.py): o servidor do painel
+atende cada request HTTP numa thread propria (ThreadingHTTPServer), entao
+sem isso duas threads podiam usar cursores da MESMA conexao ao mesmo
+tempo -- na pratica "database is locked"/erros esporadicos de cursor, nao
+so em escritas. Correcao pos-auditoria (P1-4): antes so upsert/
+replace_segments/soft_delete tinham o lock; get_meeting/list_meetings/
+count_meetings/search_meetings rodavam sem nenhuma serializacao.
 """
 
 from __future__ import annotations
@@ -67,8 +73,9 @@ class MeetingRepository:
                 )
 
     def get_meeting(self, meeting_id: str) -> Optional[Dict]:
-        row = self._conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
-        return _row_to_dict(row) if row else None
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+            return _row_to_dict(row) if row else None
 
     def list_meetings(
         self,
@@ -94,9 +101,10 @@ class MeetingRepository:
             params.append(date_to)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend([limit, offset])
-        rows = self._conn.execute(
-            f"SELECT * FROM meetings {where} ORDER BY started_at DESC, created_at DESC LIMIT ? OFFSET ?", params
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM meetings {where} ORDER BY started_at DESC, created_at DESC LIMIT ? OFFSET ?", params
+            ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
     def count_meetings(self, status: Optional[str] = None, include_deleted: bool = False) -> int:
@@ -108,7 +116,8 @@ class MeetingRepository:
             clauses.append("status = ?")
             params.append(status)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        row = self._conn.execute(f"SELECT COUNT(*) AS n FROM meetings {where}", params).fetchone()
+        with self._lock:
+            row = self._conn.execute(f"SELECT COUNT(*) AS n FROM meetings {where}", params).fetchone()
         return row["n"]
 
     def soft_delete_meeting(self, meeting_id: str) -> bool:
@@ -147,9 +156,10 @@ class MeetingRepository:
                     )
 
     def list_segments(self, meeting_id: str) -> List[Dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM meeting_segments WHERE meeting_id = ? ORDER BY sequence ASC", (meeting_id,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM meeting_segments WHERE meeting_id = ? ORDER BY sequence ASC", (meeting_id,)
+            ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
     # -- busca ------------------------------------------------------------
@@ -163,28 +173,29 @@ class MeetingRepository:
         query = (query or "").strip()
         if not query:
             return []
-        if self._fts5:
-            rows = self._conn.execute(
-                """
-                SELECT m.* FROM meetings m
-                WHERE m.deleted_at IS NULL AND m.id IN (
-                    SELECT DISTINCT meeting_id FROM search_index WHERE search_index MATCH ?
-                )
-                ORDER BY m.started_at DESC LIMIT ?
-                """,
-                (_fts5_query(query), limit),
-            ).fetchall()
-        else:
-            like = f"%{query}%"
-            rows = self._conn.execute(
-                """
-                SELECT DISTINCT m.* FROM meetings m
-                LEFT JOIN meeting_segments s ON s.meeting_id = m.id
-                WHERE m.deleted_at IS NULL AND (m.title LIKE ? OR s.text LIKE ?)
-                ORDER BY m.started_at DESC LIMIT ?
-                """,
-                (like, like, limit),
-            ).fetchall()
+        with self._lock:
+            if self._fts5:
+                rows = self._conn.execute(
+                    """
+                    SELECT m.* FROM meetings m
+                    WHERE m.deleted_at IS NULL AND m.id IN (
+                        SELECT DISTINCT meeting_id FROM search_index WHERE search_index MATCH ?
+                    )
+                    ORDER BY m.started_at DESC LIMIT ?
+                    """,
+                    (_fts5_query(query), limit),
+                ).fetchall()
+            else:
+                like = f"%{query}%"
+                rows = self._conn.execute(
+                    """
+                    SELECT DISTINCT m.* FROM meetings m
+                    LEFT JOIN meeting_segments s ON s.meeting_id = m.id
+                    WHERE m.deleted_at IS NULL AND (m.title LIKE ? OR s.text LIKE ?)
+                    ORDER BY m.started_at DESC LIMIT ?
+                    """,
+                    (like, like, limit),
+                ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
 
