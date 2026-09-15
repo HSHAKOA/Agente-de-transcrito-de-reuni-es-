@@ -32,7 +32,7 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function NextRecordingCard() {
+function NextRecordingCard({ onOpenSchedules }: { onOpenSchedules: () => void }) {
   const { schedules } = useSchedules();
 
   const next = useMemo(() => {
@@ -46,9 +46,22 @@ function NextRecordingCard() {
 
   const remaining = useCountdown(next?.seconds_until_next_run ?? null);
 
+  const header = (
+    <div className="mb-3 flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <Calendar className="size-4 text-neutral-400" />
+        <span className="font-medium">Próxima gravação</span>
+      </div>
+      <button onClick={onOpenSchedules} className="text-xs text-neutral-500 hover:text-neutral-300">
+        Ver agendamentos
+      </button>
+    </div>
+  );
+
   if (schedules === null) {
     return (
-      <Card title="Próxima gravação" icon={<Calendar className="size-4 text-neutral-400" />}>
+      <Card>
+        {header}
         <p className="text-sm text-neutral-500">Consultando agendamentos…</p>
       </Card>
     );
@@ -56,7 +69,8 @@ function NextRecordingCard() {
 
   if (!next || remaining === null) {
     return (
-      <Card title="Próxima gravação" icon={<Calendar className="size-4 text-neutral-400" />}>
+      <Card>
+        {header}
         <p className="text-sm text-neutral-500">Nenhuma gravação agendada.</p>
       </Card>
     );
@@ -65,7 +79,8 @@ function NextRecordingCard() {
   const start = next.current_run ? formatDateTime(next.current_run.scheduled_start_at) : "—";
 
   return (
-    <Card title="Próxima gravação" icon={<Calendar className="size-4 text-neutral-400" />}>
+    <Card>
+      {header}
       <p className="text-base font-medium">{next.title}</p>
       <p className="mt-1 text-sm text-neutral-400">{start}</p>
       <p className="mt-2 text-sm text-neutral-300">
@@ -165,9 +180,10 @@ interface DashboardProps {
   status: StatusResponse | null;
   onSelectMeeting: (id: string) => void;
   onViewRecording: () => void;
+  onViewSchedules: () => void;
 }
 
-export function Dashboard({ status, onSelectMeeting, onViewRecording }: DashboardProps) {
+export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSchedules }: DashboardProps) {
   const { settings } = useSettingsInfo();
   const connected = status !== null;
 
@@ -192,7 +208,7 @@ export function Dashboard({ status, onSelectMeeting, onViewRecording }: Dashboar
       )}
 
       <div className="grid gap-4">
-        <NextRecordingCard />
+        <NextRecordingCard onOpenSchedules={onViewSchedules} />
         <RecentMeetings onSelectMeeting={onSelectMeeting} />
 
         {settings && (
