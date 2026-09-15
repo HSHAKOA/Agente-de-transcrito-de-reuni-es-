@@ -181,9 +181,10 @@ interface DashboardProps {
   onSelectMeeting: (id: string) => void;
   onViewRecording: () => void;
   onViewSchedules: () => void;
+  onNewMeeting: () => void;
 }
 
-export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSchedules }: DashboardProps) {
+export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSchedules, onNewMeeting }: DashboardProps) {
   const { settings } = useSettingsInfo();
   const connected = status !== null;
 
@@ -191,9 +192,19 @@ export function Dashboard({ status, onSelectMeeting, onViewRecording, onViewSche
     <div className="mx-auto max-w-2xl px-4 py-10">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold tracking-tight">Meeting Intelligence</h1>
-        <div className="flex items-center gap-1.5 text-xs text-neutral-500">
-          <CircleDot className={`size-3 ${connected ? "text-emerald-400" : "text-neutral-600"}`} />
-          {connected ? "Conectado" : "Sem conexão"}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-neutral-500">
+            <CircleDot className={`size-3 ${connected ? "text-emerald-400" : "text-neutral-600"}`} />
+            {connected ? "Conectado" : "Sem conexão"}
+          </div>
+          {!status?.running && (
+            <button
+              onClick={onNewMeeting}
+              className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-800"
+            >
+              + Nova reunião
+            </button>
+          )}
         </div>
       </div>
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useBackendStatus } from "../hooks/useBackendStatus";
 import { Dashboard } from "../pages/Dashboard";
 import { MeetingDetail } from "../pages/MeetingDetail";
+import { NewMeeting } from "../pages/NewMeeting";
 import { Recording } from "../pages/Recording";
 import { Schedules } from "../pages/Schedules";
 
@@ -10,7 +11,8 @@ type View =
   | { name: "dashboard" }
   | { name: "meeting"; id: string }
   | { name: "recording" }
-  | { name: "schedules" };
+  | { name: "schedules" }
+  | { name: "new-meeting" };
 
 /**
  * A Fase F ganhou três telas de produto de verdade (Dashboard, Detalhe
@@ -65,12 +67,20 @@ export function App() {
 
       {view.name === "schedules" && <Schedules onBack={() => setView({ name: "dashboard" })} />}
 
+      {view.name === "new-meeting" && (
+        <NewMeeting
+          onBack={() => setView({ name: "dashboard" })}
+          onStarted={() => setView({ name: "recording" })}
+        />
+      )}
+
       {view.name === "dashboard" && (
         <Dashboard
           status={status}
           onSelectMeeting={(id) => setView({ name: "meeting", id })}
           onViewRecording={() => setView({ name: "recording" })}
           onViewSchedules={() => setView({ name: "schedules" })}
+          onNewMeeting={() => setView({ name: "new-meeting" })}
         />
       )}
     </div>

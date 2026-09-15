@@ -94,6 +94,13 @@ export interface StartMeetingRequest {
   language?: string;
   chunk_seconds?: number;
   keep_audio?: boolean;
+  /** pelo menos um dos dois precisa ser `true` (ver docs/API.md) */
+  capture_system?: boolean;
+  capture_microphone?: boolean;
+  system_device_id?: string | null;
+  microphone_device_id?: string | null;
+  /** raiz desta gravação específica, se diferente da raiz global do painel */
+  meetings_root?: string;
 }
 
 /** Resposta comum de /api/start, /api/stop, /api/open-folder e
@@ -114,12 +121,6 @@ export interface AudioDevice {
   loopback_supported?: boolean;
 }
 
-/** GET /api/audio/devices */
-export interface AudioDevicesResponse {
-  inputs: AudioDevice[];
-  outputs: AudioDevice[];
-}
-
 export type AudioErrorCode =
   | "AUDIO_DEVICE_NOT_FOUND"
   | "AUDIO_DEVICE_BUSY"
@@ -135,6 +136,18 @@ export interface AudioHealthResult {
   device_name?: string;
   level?: number;
 }
+
+/** Formato de erro estruturado devolvido por várias rotas de áudio quando
+ * o motor de áudio (soundcard) falha -- nunca texto cru de exceção
+ * nativa (ver docs/API.md, "Códigos de erro"). */
+export interface AudioBackendError {
+  error: { code: AudioErrorCode; message: string };
+}
+
+/** GET /api/audio/devices -- pode devolver o erro estruturado acima em
+ * vez da lista, se o motor de áudio não estiver disponível (ver
+ * utils/isAudioBackendError.ts para o type guard). */
+export type AudioDevicesResponse = { inputs: AudioDevice[]; outputs: AudioDevice[] } | AudioBackendError;
 
 /** GET/POST /api/audio/config */
 export interface AudioConfig {
