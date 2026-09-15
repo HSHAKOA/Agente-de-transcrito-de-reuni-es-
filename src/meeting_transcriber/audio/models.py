@@ -47,6 +47,7 @@ class AudioHealthResult:
     code: Optional[str]  # um AudioErrorCode.value, ou None se ok
     message: str
     device_id: Optional[str] = None
+    device_name: Optional[str] = None
     level: Optional[float] = None  # RMS normalizado (0..1) do trecho lido, se conseguiu
 
     def to_dict(self) -> dict:
@@ -55,6 +56,8 @@ class AudioHealthResult:
             data["code"] = self.code
         if self.device_id is not None:
             data["device_id"] = self.device_id
+        if self.device_name is not None:
+            data["device_name"] = self.device_name
         if self.level is not None:
             data["level"] = self.level
         return data

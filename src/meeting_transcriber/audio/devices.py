@@ -13,7 +13,9 @@ hardware real pra testar a logica de resolucao/serializacao.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+import sys
+import threading
+from typing import List, Optional, Set
 
 import numpy as np
 
@@ -27,18 +29,79 @@ logger = logging.getLogger(__name__)
 _BACKEND_UNAVAILABLE_MESSAGE = "O motor de audio nao esta disponivel neste momento."
 _STREAM_FAILED_MESSAGE = "Nao foi possivel abrir o dispositivo de audio."
 
+# COM (Windows) exige que CADA THREAD que fizer chamadas diretas a
+# interfaces COM se registre com CoInitializeEx -- mesmo entrando na MESMA
+# apartment multi-threaded (MTA) que outra thread ja inicializou.
+# `soundcard` (WASAPI via `soundcard.mediafoundation`) so faz isso na
+# thread que primeiro importa o modulo; como o import fica em cache de
+# processo (`sys.modules`), threads seguintes nunca re-executam aquele
+# CoInitializeEx. Isso passou despercebido num teste manual porque ENUMERAR
+# dispositivos (`GET /api/audio/devices`) funcionou por acidente numa
+# thread nova do `ThreadingHTTPServer` (reaproveitamento do pool), mas
+# ABRIR um stream de verdade (`check_device_health`, usado tambem por
+# `POST /api/audio/test`) numa thread genuinamente nova falhou com
+# `CO_E_NOTINITIALIZED` (0x800401f0) -- reproduzido de verdade batendo
+# `GET /api/audio/devices` seguido de `POST /api/audio/test` numa instancia
+# isolada do servidor. Corrigido garantindo, na entrada deste modulo, que a
+# THREAD ATUAL ja chamou CoInitializeEx pelo menos uma vez.
+_com_lock = threading.Lock()
+_com_initialized_thread_ids: Set[int] = set()
+
+
+def _ensure_com_initialized_for_this_thread() -> None:
+    """Idempotente por thread (um `set` de thread ids, nunca inicializa a
+    mesma duas vezes) e tolerante a already-initialized (`S_FALSE`) ou a
+    uma apartment diferente ja escolhida por outra lib (`RPC_E_CHANGED_MODE`)
+    -- so precisamos que ESTA thread esteja registrada de algum jeito,
+    nunca forcar um modelo de apartment especifico. No-op fora do Windows."""
+    if sys.platform != "win32":
+        return
+    thread_id = threading.get_ident()
+    if thread_id in _com_initialized_thread_ids:
+        return
+    with _com_lock:
+        if thread_id in _com_initialized_thread_ids:
+            return
+        import ctypes
+
+        COINIT_MULTITHREADED = 0x0
+        S_OK = 0
+        S_FALSE = 1
+        RPC_E_CHANGED_MODE = -2147417850  # 0x80010106 como HRESULT assinado
+        hr = ctypes.windll.ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+        if hr not in (S_OK, S_FALSE, RPC_E_CHANGED_MODE):
+            logger.warning("CoInitializeEx retornou 0x%08x na thread %s", hr & 0xFFFFFFFF, thread_id)
+        _com_initialized_thread_ids.add(thread_id)
+
 
 def _backend():
     """Import tardio de `soundcard`: em ambientes sem servidor de audio
     (containers de CI, por exemplo) a lib falha ao carregar assim que
     importada -- adiar o import mantem o resto do modulo importavel/
     testavel nesses ambientes, so quebra aqui, na hora de falar com audio
-    de verdade (mesmo raciocinio ja usado em audio_capture.py)."""
+    de verdade (mesmo raciocinio ja usado em audio_capture.py).
+
+    A ordem aqui importa: `_ensure_com_initialized_for_this_thread()` roda
+    SO DEPOIS do import, nunca antes. Na primeira importacao de `soundcard`
+    em todo o processo (qualquer thread), o proprio modulo inicializa COM
+    sozinho (seu `_COMLibrary()` interno, executado no top-level do
+    submodulo `soundcard.mediafoundation`) esperando encontrar a thread
+    AINDA sem COM inicializado -- se chamassemos `CoInitializeEx` antes
+    disso na mesma thread, o `_COMLibrary.__init__` da propria lib recebe
+    `S_FALSE` (ja inicializado) em vez de `S_OK`, e o tratamento de erro
+    dela so perdoa `RPC_E_CHANGED_MODE`, nao `S_FALSE` -- resultado:
+    `import soundcard` passa a lancar `RuntimeError` e quebra a suite
+    inteira (reproduzido de verdade durante o desenvolvimento deste fix).
+    Chamando depois do import, a primeira vez (import "de verdade") fica
+    livre pra fazer sua propria inicializacao limpa; so em threads
+    SEGUINTES (onde o import e so um lookup em cache, sem tocar COM) e que
+    nosso `CoInitializeEx` extra e o unico que realmente acontece."""
     try:
         import soundcard as sc
     except Exception as exc:  # depende do SO/driver, dificil restringir o tipo
         logger.error("Falha ao carregar o backend de audio: %s", exc)
         raise AudioError(AudioErrorCode.BACKEND_UNAVAILABLE, _BACKEND_UNAVAILABLE_MESSAGE) from exc
+    _ensure_com_initialized_for_this_thread()
     return sc
 
 
@@ -164,6 +227,7 @@ def check_device_health(
         return AudioHealthResult(ok=False, code=exc.code, message=exc.message, device_id=device_id)
 
     resolved_id = getattr(mic, "id", device_id)
+    resolved_name = getattr(mic, "name", None)
     frames = max(1, int(samplerate * probe_seconds))
     try:
         with mic.recorder(samplerate=samplerate, channels=1) as rec:
@@ -175,9 +239,12 @@ def check_device_health(
             code=AudioErrorCode.STREAM_FAILED,
             message=_STREAM_FAILED_MESSAGE,
             device_id=resolved_id,
+            device_name=resolved_name,
         )
 
     from .levels import compute_rms, normalize_level
 
     level = normalize_level(compute_rms(block))
-    return AudioHealthResult(ok=True, code=None, message="OK", device_id=resolved_id, level=level)
+    return AudioHealthResult(
+        ok=True, code=None, message="OK", device_id=resolved_id, device_name=resolved_name, level=level
+    )

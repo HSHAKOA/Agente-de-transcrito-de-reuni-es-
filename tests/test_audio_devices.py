@@ -5,12 +5,15 @@ Testes que exigem hardware de verdade ficam em test_audio_devices_hardware.py.
 
 from __future__ import annotations
 
+import sys
+import threading
 from dataclasses import dataclass
 from typing import List
 
 import numpy as np
 import pytest
 
+from meeting_transcriber.audio import devices as devices_module
 from meeting_transcriber.audio.devices import (
     check_device_health,
     list_devices,
@@ -194,6 +197,7 @@ def test_check_device_health_ok_for_working_input(backend: FakeBackend):
     result = check_device_health("input", "mic-1", samplerate=16000, backend=backend)
     assert result.ok is True
     assert result.device_id == "mic-1"
+    assert result.device_name == "Microfone USB"
     assert result.level is not None
 
 
@@ -231,3 +235,62 @@ def test_check_device_health_level_reflects_real_signal(backend: FakeBackend):
     result = check_device_health("input", "mic-loud", samplerate=16000, backend=backend)
     assert result.ok is True
     assert result.level > 0.5  # RMS de 0.5 constante normalizado (referencia 0.2) satura em 1.0
+
+
+# -- inicializacao de COM por thread (regressao: CO_E_NOTINITIALIZED) ------
+#
+# Cada thread que chama uma interface COM diretamente precisa ter chamado
+# CoInitializeEx pelo menos uma vez -- `soundcard` so faz isso na thread
+# que primeiro importa o modulo. `_ensure_com_initialized_for_this_thread`
+# fecha essa lacuna para qualquer outra thread (ex.: cada request de
+# `ThreadingHTTPServer` em webui.py) que chame `_backend()`.
+#
+# Importante: estes testes chamam `_backend()` (nao a funcao privada de
+# COM isolada) de proposito. Chamar `_ensure_com_initialized_for_this_thread`
+# diretamente, ANTES de qualquer `import soundcard` ter acontecido nesta
+# thread, reproduziria um bug real encontrado durante o desenvolvimento
+# deste fix: se COM ja estiver inicializado quando `soundcard` importa
+# pela primeira vez (em qualquer thread do processo), o `_COMLibrary()`
+# interno da propria lib recebe `S_FALSE` do seu proprio `CoInitializeEx`
+# e o tratamento de erro dela so perdoa `RPC_E_CHANGED_MODE`, nao
+# `S_FALSE` -- resultado: `import soundcard` passa a lancar `RuntimeError`
+# e QUALQUER teste (inclusive os de hardware) que dependa dele quebra.
+# `_backend()` evita isso host importando primeiro; os testes abaixo
+# passam por ele para exercitar o caminho real, nao um atalho perigoso.
+
+pytestmark_com = pytest.mark.skipif(sys.platform != "win32", reason="COM e especifico do Windows")
+
+
+@pytestmark_com
+def test_ensure_com_initialized_is_idempotent_for_current_thread():
+    try:
+        devices_module._backend()
+        devices_module._backend()  # nao deve lancar nem reinicializar
+    except AudioError:
+        pytest.skip("motor de audio indisponivel neste ambiente")
+    assert threading.get_ident() in devices_module._com_initialized_thread_ids
+
+
+@pytestmark_com
+def test_ensure_com_initialized_works_from_a_freshly_spawned_thread():
+    outcome: dict = {}
+
+    def _worker():
+        try:
+            devices_module._backend()
+            outcome["thread_id"] = threading.get_ident()
+        except AudioError as exc:
+            outcome["skip"] = str(exc)
+        except Exception as exc:  # nao deveria acontecer
+            outcome["exception"] = exc
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    if "skip" in outcome:
+        pytest.skip("motor de audio indisponivel neste ambiente")
+    assert "exception" not in outcome, f"levantou excecao inesperada: {outcome.get('exception')!r}"
+    assert outcome["thread_id"] != threading.get_ident()
+    assert outcome["thread_id"] in devices_module._com_initialized_thread_ids
