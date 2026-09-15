@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -60,7 +61,7 @@ from meeting_transcriber.export import CONTENT_TYPES as EXPORT_CONTENT_TYPES  # 
 from meeting_transcriber.export import EXTENSIONS as EXPORT_EXTENSIONS  # noqa: E402
 from meeting_transcriber.export import render as render_export  # noqa: E402
 from meeting_transcriber.storage.db import connect as connect_db  # noqa: E402
-from meeting_transcriber.storage.import_filesystem import import_all  # noqa: E402
+from meeting_transcriber.storage.import_filesystem import import_all, import_meeting  # noqa: E402
 from meeting_transcriber.storage.repository import MeetingRepository  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
@@ -200,6 +201,13 @@ state = {
     "started_at": None,
     "finished_at": None,
     "exit_code": None,
+    # True do momento em que /api/stop e aceito ate o subprocesso realmente
+    # terminar (_reader_thread detectar o exit) -- correcao pos-auditoria
+    # (P1-5): antes disso o botao "Parar" reabilitava na hora (o processo
+    # ainda estava vivo terminando o encerramento gracioso, que pode levar
+    # ate ~35s), permitindo um duplo clique disparar uma segunda thread de
+    # shutdown concorrente no mesmo processo.
+    "stopping": False,
 }
 
 
@@ -283,8 +291,32 @@ def _reader_thread(proc: subprocess.Popen) -> None:
     with state_lock:
         state["finished_at"] = time.time()
         state["exit_code"] = exit_code
+        meeting_dir = state["meeting_dir"]
         state["proc"] = None  # libera pra um novo /api/start poder rodar
+        state["stopping"] = False
     _log(f"[painel] processo encerrado (codigo {exit_code}).")
+
+    # Indexacao automatica no historico (correcao pos-auditoria P1-2): antes
+    # disso, a UNICA forma de uma reuniao aparecer no Dashboard/historico/
+    # busca era o usuario saber que existe POST /api/meetings/import e
+    # chama-lo manualmente -- na pratica o banco ficava sempre vazio.
+    # `import_meeting` e idempotente (upsert por id) e nunca toca nenhum
+    # arquivo real da reuniao (so LE transcript.md/state.json) -- reimportar
+    # a mesma reuniao de novo (ex.: reprocessamento via resume_meeting, que
+    # tambem passa por _reader_thread) so atualiza os campos, nunca duplica.
+    # Roda mesmo se o processo terminou com erro/interrompido: melhor um
+    # registro no historico refletindo o status real do que nenhum registro.
+    if meeting_dir:
+        result = import_meeting(meeting_repository, Path(meeting_dir))
+        if result.ok:
+            _log(f"[painel] reuniao indexada no historico ({result.segments_imported} segmento(s)).")
+        else:
+            # falha na indexacao NUNCA compromete os arquivos reais (audio/
+            # transcript.md continuam intactos em disco) -- so registra o
+            # erro; o usuario ainda pode rodar "Sincronizar historico"
+            # (POST /api/meetings/import) manualmente depois.
+            logger.warning("Falha ao indexar automaticamente a reuniao em %s: %s", meeting_dir, result.message)
+            _log(f"[painel] aviso: nao foi possivel indexar a reuniao no historico ({result.message}).")
 
 
 def _launch(cmd: list[str]) -> "tuple[subprocess.Popen, Optional[str]]":
@@ -385,6 +417,14 @@ def open_folder(path_value) -> "tuple[bool, str]":
     shell, nao interpreta o path como comando. Nos demais SOs usamos
     subprocess.Popen com uma LISTA de argumentos (nunca shell=True nem
     concatenacao de string no comando).
+
+    O path precisa estar dentro de alguma raiz de reunioes JA CONHECIDA
+    (`settings.get_known_meeting_roots` -- a mesma lista usada por
+    recovery/resume, ver docs/RECOVERY.md), nao so a raiz ATIVA hoje
+    (correcao pos-auditoria P2: usuario que trocou de pasta nao conseguia
+    mais abrir reunioes antigas). Continua bloqueando qualquer path que
+    nao esteja dentro de nenhuma raiz ja usada -- nunca abre um caminho
+    arbitrario vindo do cliente.
     """
     if not isinstance(path_value, str) or not path_value.strip():
         return False, "Caminho invalido."
@@ -393,9 +433,9 @@ def open_folder(path_value) -> "tuple[bool, str]":
     except (OSError, RuntimeError):
         return False, "Caminho invalido."
 
-    meetings_resolved = MEETINGS_DIR.resolve()
-    if path != meetings_resolved and meetings_resolved not in path.parents:
-        return False, "So e possivel abrir pastas dentro da raiz de reunioes configurada."
+    known_roots = [root.resolve() for root in settings.get_known_meeting_roots(SETTINGS_PATH)]
+    if not any(path == root or root in path.parents for root in known_roots):
+        return False, "So e possivel abrir pastas dentro de uma raiz de reunioes conhecida."
     if not path.exists():
         return False, "Pasta nao encontrada."
 
@@ -550,6 +590,7 @@ def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[boo
         state["started_at"] = time.time()
         state["finished_at"] = None
         state["exit_code"] = None
+        state["stopping"] = False
         state["log"].clear()
 
     # lembra a escolha pra proxima reuniao (mission, secao "Configuracoes":
@@ -565,7 +606,13 @@ def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[boo
             microphone_device_id=microphone_device_id,
         )
 
-    _log(f"[painel] iniciado: {' '.join(cmd)}")
+    # Comando completo (com paths absolutos do sistema) vai so pro log do
+    # SERVIDOR (console/arquivo, nunca exposto por nenhuma API) -- o log em
+    # memoria devolvido por /api/status pro navegador leva so uma linha sem
+    # detalhe interno (correcao pos-auditoria: evitar vazar caminhos
+    # absolutos/argumentos internos pra quem so deveria ver "esta gravando").
+    logger.info("Comando do subprocesso de gravacao: %s", cmd)
+    _log(f"[painel] gravacao iniciada (meeting_id={meeting_id}).")
     threading.Thread(target=_reader_thread, args=(proc,), daemon=True).start()
     return True, "Gravacao iniciada."
 
@@ -575,11 +622,22 @@ def stop_transcriber() -> "tuple[bool, str]":
     gracioso: sinaliza parada (o subprocesso ainda termina de escrever o
     bloco parcial e finalizar o markdown), e so escala para terminate()/
     kill() se ele nao responder dentro do timeout (ver shutdown_sequence).
+
+    Recusa um segundo pedido enquanto o primeiro ainda esta em andamento
+    (`state["stopping"]`) -- correcao pos-auditoria (P1-5): antes disso um
+    duplo clique no botao "Parar" (facil de acontecer, o encerramento
+    gracioso pode levar ate ~35s) disparava uma SEGUNDA thread de
+    `shutdown_sequence` concorrente enviando sinais pro mesmo processo.
     """
     with state_lock:
         proc = state["proc"]
+        already_stopping = state["stopping"]
+        if proc is not None and not already_stopping:
+            state["stopping"] = True
     if proc is None:
         return False, "Nenhuma gravacao em andamento."
+    if already_stopping:
+        return False, "Ja estamos finalizando esta gravacao, aguarde."
 
     _log("[painel] parando... aguardando a finalizacao do bloco atual (pode levar ate alguns minutos).")
     threading.Thread(target=shutdown_sequence, args=(proc,), daemon=True).start()
@@ -639,6 +697,7 @@ def resume_meeting(meeting_id: str) -> "tuple[bool, str]":
         state["started_at"] = time.time()
         state["finished_at"] = None
         state["exit_code"] = None
+        state["stopping"] = False
         state["log"].clear()
 
     _log(f"[painel] reprocessando sessao interrompida {meeting_id}...")
@@ -656,6 +715,7 @@ def get_status() -> dict:
         started_at = state["started_at"]
         payload = {
             "running": running,
+            "stopping": state["stopping"],
             "output": output,
             "chunk_seconds": chunk_seconds,
             "meeting_dir": state["meeting_dir"],
@@ -783,9 +843,17 @@ def get_audio_levels() -> dict:
     gravacao ATIVA (se houver), escrito periodicamente pelo subprocesso em
     `<meeting_dir>/levels.json` (ver cli.py:_levels_writer_loop). Devolve
     {} se nao ha gravacao rodando ou o arquivo ainda nao existe/esta no
-    meio de uma escrita -- nunca uma excecao por isso."""
+    meio de uma escrita -- nunca uma excecao por isso.
+
+    Checa `state["proc"] is not None`, nao so `meeting_dir` truthy
+    (correcao pos-auditoria): `meeting_dir` continua com o valor da
+    ULTIMA sessao mesmo depois dela terminar (get_status ainda usa isso
+    pra mostrar informacao da ultima gravacao) -- sem esta checagem extra,
+    o medidor de nivel continuava lendo o levels.json residual de uma
+    sessao ja encerrada, fazendo o React mostrar audio "ativo" que nao
+    existe mais."""
     with state_lock:
-        meeting_dir = state["meeting_dir"]
+        meeting_dir = state["meeting_dir"] if state["proc"] is not None else None
     if not meeting_dir:
         return {}
     levels_path = Path(meeting_dir) / "levels.json"
@@ -802,9 +870,14 @@ def get_live_transcription() -> dict:
     `<meeting_dir>/live_transcript.json` (ver cli.py:_live_transcript_writer_loop,
     Fase D). Devolve {} se nao ha gravacao rodando, se a transcricao ao
     vivo estiver desativada nesta sessao, ou se o arquivo ainda nao
-    existe/esta no meio de uma escrita -- nunca uma excecao por isso."""
+    existe/esta no meio de uma escrita -- nunca uma excecao por isso.
+
+    Mesma correcao pos-auditoria de `get_audio_levels`: checa
+    `state["proc"] is not None`, nao so `meeting_dir` truthy, senao a
+    transcricao ao vivo continuaria "aparecendo" depois da gravacao ja ter
+    parado."""
     with state_lock:
-        meeting_dir = state["meeting_dir"]
+        meeting_dir = state["meeting_dir"] if state["proc"] is not None else None
     if not meeting_dir:
         return {}
     live_path = Path(meeting_dir) / "live_transcript.json"
@@ -976,12 +1049,39 @@ _SCHEDULE_ACTION_PATH_RE = re.compile(r"^/api/schedules/([^/]+)/(cancel|start-no
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 
+# Origens permitidas a mandar requests que MUDAM estado (POST): o proprio
+# painel (producao, servido por esta porta) e o dev server do Vite (Fase
+# F, `npm run dev`, proxy configurado em frontend/vite.config.ts). Fixo de
+# proposito (missao, secao 10: "nao transformar isto num sistema complexo
+# de autenticacao web") -- se o Vite subir noutra porta (ex.: 5173 ja
+# ocupada), o proxy do dev server ainda funciona porque o NAVEGADOR nunca
+# manda Origin:5174 pro backend: o proxy repassa a request como se fosse
+# a mesma origem (ver vite.config.ts, changeOrigin:true).
+_ALLOWED_ORIGINS = {
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+}
+
+# Diretorio do build de producao do React (Fase F) -- `npm run build` em
+# frontend/. Quando existe, e a interface padrao servida por este painel
+# (ver Handler.do_GET); quando nao existe (build nunca rodado), cai pro
+# painel legado (ROOT/index.html), que sempre funcionou e continua
+# funcionando sem exigir Node/npm no computador de quem so quer usar o app.
+FRONTEND_DIST = ROOT / "frontend" / "dist"
+
+
+def _frontend_build_available() -> bool:
+    return (FRONTEND_DIST / "index.html").exists()
+
 
 class Handler(BaseHTTPRequestHandler):
-    """Roteador HTTP minimo: serve o index.html e as rotas da API.
-    Cada request roda numa thread propria (heranca de ThreadingHTTPServer),
-    entao /api/status continua respondendo rapido mesmo com uma gravacao
-    em andamento no subprocesso."""
+    """Roteador HTTP minimo: serve o painel (React, se o build existir;
+    senao o legado index.html) e as rotas da API. Cada request roda numa
+    thread propria (heranca de ThreadingHTTPServer), entao /api/status
+    continua respondendo rapido mesmo com uma gravacao em andamento no
+    subprocesso."""
 
     def log_message(self, format, *args):  # noqa: A002 - silencia log padrao no console
         pass
@@ -993,6 +1093,60 @@ class Handler(BaseHTTPRequestHandler):
         # main()), nunca em 0.0.0.0 — isso aqui e uma camada extra.
         host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
         return host in _ALLOWED_HOSTS
+
+    def _valid_origin(self) -> bool:
+        # Defesa contra CSRF local (missao, secao 10): uma pagina maliciosa
+        # aberta em outra aba do MESMO navegador poderia, sem isto, mandar
+        # `fetch('http://127.0.0.1:8765/api/stop', {method:'POST', ...})` e
+        # abortar uma gravacao em andamento -- Host sozinho nao protege
+        # disso (o navegador manda Host:127.0.0.1:8765 normalmente, so
+        # Origin revela que a pagina que INICIOU o request e outra).
+        # Requests SEM Origin (curl, testes automatizados, algumas
+        # ferramentas de desenvolvimento) sao permitidas de proposito --
+        # documentado, nao um descuido: navegadores sempre mandam Origin em
+        # requests cross-origin/fetch; a ausencia dele aqui tipicamente
+        # significa "nao veio de um navegador fazendo fetch", nao uma
+        # pagina tentando esconder a origem.
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        return origin in _ALLOWED_ORIGINS
+
+    def _serve_frontend_asset(self, path: str) -> bool:
+        """Tenta servir `path` como um arquivo estatico do build React
+        (frontend/dist/...). Devolve True se serviu (200) ou recusou por
+        path traversal (404), False se simplesmente nao existe esse
+        arquivo -- nesse caso quem chama decide o fallback (index.html,
+        pro roteamento do lado do cliente funcionar em rotas como
+        "/agendamentos" que so existem no React, nunca no disco)."""
+        dist_root = FRONTEND_DIST.resolve()
+        candidate = (FRONTEND_DIST / path.lstrip("/")).resolve()
+        if candidate != dist_root and dist_root not in candidate.parents:
+            return False  # tentativa de escapar de frontend/dist (ex.: "/../webui.py")
+        if not candidate.is_file():
+            return False
+        content_type = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
+        self._serve_file(candidate, content_type)
+        return True
+
+    def _serve_app(self, path: str) -> None:
+        """Serve tudo que nao e /api/*: build de producao do React quando
+        existir (arquivo estatico correspondente, ou index.html como
+        fallback de SPA -- rotas como "/agendamentos" nao existem como
+        arquivo, o proprio React trata a navegacao no cliente), ou o
+        painel legado (ROOT/index.html) quando o build nunca foi gerado.
+        Nunca serve nada daqui pra dentro de /api/* -- isso e 404, nao um
+        fallback de pagina (evita mascarar uma rota de API digitada errada
+        como se fosse uma pagina do React)."""
+        if path.startswith("/api/"):
+            self.send_error(404)
+            return
+        if _frontend_build_available():
+            if path not in ("", "/") and self._serve_frontend_asset(path):
+                return
+            self._serve_file(FRONTEND_DIST / "index.html", "text/html; charset=utf-8")
+            return
+        self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -1012,9 +1166,7 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query_params = parse_qs(parsed.query)
         try:
-            if path == "/" or path == "/index.html":
-                self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")  # sempre le do disco, sem cache
-            elif path == "/api/status":
+            if path == "/api/status":
                 self._send_json(get_status())  # consultado pela pagina a cada 1.5s
             elif path == "/api/recovery":
                 self._send_json(get_recovery())
@@ -1045,7 +1197,11 @@ class Handler(BaseHTTPRequestHandler):
                 ok, payload = get_meeting_detail(match.group(1))
                 self._send_json(payload, 200 if ok else 404)
             else:
-                self.send_error(404)
+                # nao e nenhuma rota /api/* conhecida: serve o painel
+                # (React se o build existir, senao o legado) -- inclui "/"
+                # e qualquer rota de navegacao do lado do cliente do React
+                # (ex.: se o usuario recarregar a pagina em "/agendamentos").
+                self._serve_app(path)
         except Exception:
             logger.exception("Erro tratando GET %s", self.path)
             self._send_json({"ok": False, "message": "Erro interno no painel."}, 500)
@@ -1053,6 +1209,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if not self._valid_host():
             self.send_error(400, "Host invalido")
+            return
+        if not self._valid_origin():
+            self.send_error(403, "Origin nao permitida")
             return
 
         try:

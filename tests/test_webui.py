@@ -357,7 +357,11 @@ def test_shutdown_sequence_escalates_to_kill_as_last_resort():
     assert proc.killed
 
 
-def test_stop_stop_concurrent_does_not_crash(_isolated_webui, monkeypatch):
+def test_stop_stop_concurrent_only_one_wins(_isolated_webui, monkeypatch):
+    """P1-5: um segundo /api/stop enquanto o primeiro ainda esta em
+    andamento precisa ser RECUSADO (nao disparar uma segunda thread de
+    shutdown_sequence concorrente no mesmo processo) -- antes desta
+    correcao, todo pedido concorrente de stop era aceito."""
     webui.start_transcriber({})
     monkeypatch.setattr(webui, "shutdown_sequence", lambda p, **kw: "graceful")
 
@@ -369,8 +373,30 @@ def test_stop_stop_concurrent_does_not_crash(_isolated_webui, monkeypatch):
         t.join(timeout=5)
 
     # nenhuma excecao propagada (threads teriam sido interrompidas silenciosamente
-    # se .join nao completasse); todas devem ver o processo como "em andamento"
-    assert all(ok for ok, _ in results)
+    # se .join nao completasse); exatamente UM pedido vence, os demais sao recusados.
+    successes = [r for r in results if r[0]]
+    assert len(successes) == 1
+
+
+def test_stop_transcriber_rejects_second_call_while_already_stopping(_isolated_webui, monkeypatch):
+    webui.start_transcriber({})
+    monkeypatch.setattr(webui, "shutdown_sequence", lambda p, **kw: "graceful")
+
+    ok1, _ = webui.stop_transcriber()
+    ok2, msg2 = webui.stop_transcriber()
+
+    assert ok1 is True
+    assert ok2 is False
+    assert "finalizando" in msg2.lower() or "aguarde" in msg2.lower()
+
+
+def test_get_status_reports_stopping_flag(_isolated_webui, monkeypatch):
+    webui.start_transcriber({})
+    assert webui.get_status()["stopping"] is False
+
+    monkeypatch.setattr(webui, "shutdown_sequence", lambda p, **kw: "graceful")
+    webui.stop_transcriber()
+    assert webui.get_status()["stopping"] is True
 
 
 # -- resume_meeting -----------------------------------------------------
@@ -613,6 +639,42 @@ def test_open_folder_rejects_invalid_input(_isolated_webui):
         assert not ok
 
 
+def test_open_folder_allows_previously_known_root_not_just_the_active_one(_isolated_webui, monkeypatch, tmp_path):
+    """P2: usuario gravou em uma raiz, trocou pra outra -- ainda precisa
+    conseguir abrir pastas de reunioes da raiz ANTIGA (ambas ja conhecidas
+    por settings.get_known_meeting_roots), nao so a raiz ativa hoje."""
+    old_root = tmp_path / "RaizAntiga"
+    old_root.mkdir()
+    (old_root / "reuniao-velha").mkdir()
+    new_root = tmp_path / "RaizNova"
+
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, old_root)
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, new_root)  # troca -- old_root fica so "conhecida"
+    webui.MEETINGS_DIR = new_root
+
+    calls = []
+    monkeypatch.setattr(webui.os, "startfile", lambda p: calls.append(p), raising=False)
+    monkeypatch.setattr(webui.sys, "platform", "win32")
+
+    ok, msg = webui.open_folder(str(old_root / "reuniao-velha"))
+
+    assert ok, msg
+    assert calls == [str(old_root / "reuniao-velha")]
+
+
+def test_open_folder_still_rejects_paths_outside_every_known_root(_isolated_webui, tmp_path):
+    old_root = tmp_path / "RaizAntiga"
+    new_root = tmp_path / "RaizNova"
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, old_root)
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, new_root)
+    webui.MEETINGS_DIR = new_root
+
+    outside = tmp_path / "NuncaFoiUsada"
+    outside.mkdir()
+    ok, msg = webui.open_folder(str(outside))
+    assert not ok
+
+
 # -- audio (Fase C) ------------------------------------------------------
 
 def test_get_audio_devices_returns_serializable_dtos(_isolated_webui, monkeypatch):
@@ -708,7 +770,23 @@ def test_get_audio_levels_reads_current_meeting_levels_file(_isolated_webui, tmp
     (meeting_dir / "levels.json").write_text('{"system": {"level": 0.5}}', encoding="utf-8")
     with webui.state_lock:
         webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = object()  # simula gravacao ativa (ver checagem em get_audio_levels)
     assert webui.get_audio_levels() == {"system": {"level": 0.5}}
+
+
+def test_get_audio_levels_empty_after_recording_stops_even_if_meeting_dir_still_set(_isolated_webui, tmp_path):
+    """Regressao pos-auditoria (P2): `meeting_dir` continua no `state`
+    depois que a gravacao termina (get_status usa isso pra mostrar
+    informacao da ultima sessao) -- sem checar `proc is not None` tambem,
+    o medidor de nivel continuava lendo o levels.json de uma gravacao ja
+    encerrada havia muito tempo."""
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    (meeting_dir / "levels.json").write_text('{"system": {"level": 0.9}}', encoding="utf-8")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = None  # gravacao ja terminou
+    assert webui.get_audio_levels() == {}
 
 
 # -- transcricao ao vivo (Fase D) ---------------------------------------
@@ -724,6 +802,7 @@ def test_get_live_transcription_reads_current_meeting_file(_isolated_webui, tmp_
     (meeting_dir / "live_transcript.json").write_text(payload, encoding="utf-8")
     with webui.state_lock:
         webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = object()  # simula gravacao ativa
     result = webui.get_live_transcription()
     assert result["segments"] == [{"text": "ola"}]
     assert result["backlog"]["status"] == "LIVE"
@@ -734,6 +813,7 @@ def test_get_live_transcription_empty_when_file_missing_even_if_recording(_isola
     meeting_dir.mkdir()  # sem live_transcript.json (ex.: --no-live-transcription)
     with webui.state_lock:
         webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = object()
     assert webui.get_live_transcription() == {}
 
 
@@ -743,6 +823,19 @@ def test_get_live_transcription_tolerates_malformed_json(_isolated_webui, tmp_pa
     (meeting_dir / "live_transcript.json").write_text("{ nao e json valido", encoding="utf-8")
     with webui.state_lock:
         webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = object()
+    assert webui.get_live_transcription() == {}
+
+
+def test_get_live_transcription_empty_after_recording_stops_even_if_meeting_dir_still_set(_isolated_webui, tmp_path):
+    """Mesma regressao pos-auditoria (P2) de `get_audio_levels`, aplicada
+    a transcricao ao vivo."""
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    (meeting_dir / "live_transcript.json").write_text('{"segments": [{"text": "velho"}]}', encoding="utf-8")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = None
     assert webui.get_live_transcription() == {}
 
 
@@ -758,6 +851,7 @@ def test_get_audio_levels_tolerates_missing_or_malformed_file(_isolated_webui, t
     meeting_dir.mkdir()
     with webui.state_lock:
         webui.state["meeting_dir"] = str(meeting_dir)
+        webui.state["proc"] = object()
     assert webui.get_audio_levels() == {}  # arquivo nao existe ainda -- nao e erro
 
     (meeting_dir / "levels.json").write_text("{ nao e json valido", encoding="utf-8")
@@ -981,6 +1075,156 @@ def test_http_rejects_bad_host_header(live_server):
         conn.close()
 
 
+def test_http_post_rejects_disallowed_origin(live_server):
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    try:
+        body = b"{}"
+        conn.putrequest("POST", "/api/stop")
+        conn.putheader("Content-Length", str(len(body)))
+        conn.putheader("Origin", "http://evil.example.com")
+        conn.endheaders()
+        conn.send(body)
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 403
+    finally:
+        conn.close()
+
+
+def test_http_post_allows_own_origin(live_server):
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    try:
+        body = b"{}"
+        conn.putrequest("POST", "/api/stop")
+        conn.putheader("Content-Length", str(len(body)))
+        conn.putheader("Origin", "http://127.0.0.1:8765")
+        conn.endheaders()
+        conn.send(body)
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status in (200, 409)  # nunca 403 -- origem permitida
+    finally:
+        conn.close()
+
+
+def test_http_post_allows_vite_dev_origin(live_server):
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    try:
+        body = b"{}"
+        conn.putrequest("POST", "/api/stop")
+        conn.putheader("Content-Length", str(len(body)))
+        conn.putheader("Origin", "http://localhost:5173")
+        conn.endheaders()
+        conn.send(body)
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status in (200, 409)
+    finally:
+        conn.close()
+
+
+def test_http_post_without_origin_header_still_works(live_server):
+    """curl, scripts e a propria suite de testes nao mandam Origin -- isso
+    precisa continuar funcionando (documentado, nao uma falha de
+    seguranca: navegadores sempre mandam Origin em fetch, a ausencia dele
+    tipicamente significa "nao veio de uma pagina web")."""
+    status, body = _post(live_server, "/api/stop", b"{}", {"Content-Length": "2"})
+    assert status != 403
+
+
+def test_http_get_serves_react_build_when_present(live_server, monkeypatch, tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>REACT</html>", encoding="utf-8")
+    monkeypatch.setattr(webui, "FRONTEND_DIST", dist)
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/")
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    assert resp.status == 200
+    assert b"REACT" in data
+
+
+def test_http_get_serves_static_asset_from_react_build(live_server, monkeypatch, tmp_path):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>REACT</html>", encoding="utf-8")
+    (dist / "assets" / "index-abc123.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setattr(webui, "FRONTEND_DIST", dist)
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/assets/index-abc123.js")
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    assert resp.status == 200
+    assert data == b"console.log(1)"
+
+
+def test_http_get_falls_back_to_index_html_for_client_side_routes(live_server, monkeypatch, tmp_path):
+    """Rota que so existe do lado do cliente (React), ex.: "/agendamentos"
+    -- nao ha arquivo nenhum com esse nome em frontend/dist, entao cai pro
+    index.html (fallback de SPA), nunca 404."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>REACT</html>", encoding="utf-8")
+    monkeypatch.setattr(webui, "FRONTEND_DIST", dist)
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/agendamentos")
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    assert resp.status == 200
+    assert b"REACT" in data
+
+
+def test_http_get_unknown_api_route_stays_404_even_with_react_build_present(live_server, monkeypatch, tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>REACT</html>", encoding="utf-8")
+    monkeypatch.setattr(webui, "FRONTEND_DIST", dist)
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/api/does-not-exist")
+    resp = conn.getresponse()
+    resp.read()
+    conn.close()
+    assert resp.status == 404
+
+
+def test_http_get_rejects_path_traversal_into_frontend_dist(live_server, monkeypatch, tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>REACT</html>", encoding="utf-8")
+    outside_secret = tmp_path / "secret.txt"
+    outside_secret.write_text("segredo", encoding="utf-8")
+    monkeypatch.setattr(webui, "FRONTEND_DIST", dist)
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/../secret.txt")
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    # ou 404 (recusado) ou cai pro index.html (fallback de SPA) -- nunca o conteudo do arquivo fora de dist/
+    assert b"segredo" not in data
+
+
+def test_http_get_serves_legacy_index_when_no_react_build(live_server, monkeypatch, tmp_path):
+    monkeypatch.setattr(webui, "FRONTEND_DIST", tmp_path / "dist-que-nao-existe")
+    (tmp_path / "index.html").write_text("<html>LEGADO</html>", encoding="utf-8")  # ROOT == tmp_path no fixture
+
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    conn.request("GET", "/")
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    assert resp.status == 200
+    assert b"LEGADO" in data
+
+
 def test_http_get_settings_route(live_server):
     conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
     conn.request("GET", "/api/settings")
@@ -1177,6 +1421,59 @@ def test_schedule_engine_tick_starts_automatically(_isolated_webui, tmp_path, mo
     assert status["running"] is True
     loaded = webui.schedule_service.get(schedule.id)
     assert loaded.current_run.status == "recording"
+
+
+# -- indexacao automatica no historico apos a gravacao terminar (P1-2) -----
+
+def test_reader_thread_auto_imports_meeting_after_process_exits(_isolated_webui, tmp_path):
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="Reuniao Auto-Indexada", model="small", language="pt", device="cpu",
+        transcript_path=tmp_path / "t.md", meeting_id="auto-index-1",
+    )
+    (tmp_path / "t.md").write_text("# T\n\n## Transcricao\n\n**[00:00:00]** Ola.\n\n", encoding="utf-8")
+    session.mark_completed()
+
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(session.meeting_dir)
+
+    proc = webui.subprocess.Popen(["fake"])
+    proc.finish(0)
+    webui._reader_thread(proc)  # roda inline (sem thread) so pra testar a cauda: import automatico
+
+    meeting = webui.meeting_repository.get_meeting("auto-index-1")
+    assert meeting is not None
+    assert meeting["title"] == "Reuniao Auto-Indexada"
+    assert len(webui.meeting_repository.list_segments("auto-index-1")) == 1
+
+
+def test_reader_thread_clears_stopping_flag_after_process_exits(_isolated_webui):
+    webui.start_transcriber({})
+    with webui.state_lock:
+        webui.state["stopping"] = True
+        proc = webui.state["proc"]
+    proc.finish(0)
+    webui._reader_thread(proc)
+    assert webui.get_status()["stopping"] is False
+
+
+def test_reader_thread_auto_import_failure_never_raises_or_touches_real_files(_isolated_webui, tmp_path):
+    """Se a indexacao falhar (ex.: pasta sem state.json valido), o
+    processo de leitura nao pode levantar excecao nem impedir o estado de
+    voltar a 'parado' -- os arquivos reais (se existirem) continuam
+    intactos, so o indice fica sem essa entrada (recuperavel depois via
+    'Sincronizar historico')."""
+    missing_dir = tmp_path / "pasta-sem-state-json"
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(missing_dir)
+
+    proc = webui.subprocess.Popen(["fake"])
+    proc.finish(0)
+    webui._reader_thread(proc)  # nao pode levantar excecao
+
+    with webui.state_lock:
+        assert webui.state["proc"] is None
 
 
 # -- historico e busca (Fase E) -------------------------------------------
