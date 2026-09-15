@@ -114,6 +114,17 @@
   .manual-folder-row{display:none;gap:8px;margin-top:10px}
   .manual-folder-row.visible{display:flex;flex-wrap:wrap}
   .manual-folder-row input{flex:1;min-width:200px}
+
+  .audio-source{margin-bottom:16px}
+  .audio-source select{margin-top:8px}
+  .level-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .level-label{width:80px;font-size:.78rem;color:var(--muted);flex-shrink:0}
+  .level-track{flex:1;height:10px;border-radius:999px;background:#0a0c10;border:1px solid var(--line);overflow:hidden}
+  .level-fill{height:100%;width:0%;background:var(--ok);transition:width .1s linear}
+  .level-fill.clipping{background:var(--danger)}
+  .audio-test-result{font-size:.78rem;margin-top:4px}
+  .audio-test-result.ok{color:var(--ok)}
+  .audio-test-result.error{color:var(--danger)}
 </style>
 </head>
 <body>
@@ -192,8 +203,41 @@
       <input type="checkbox" id="keepAudio" checked>
       <label for="keepAudio">Manter os áudios .wav de cada bloco (rede de segurança)</label>
     </div>
+  </div>
 
-    <div class="actions" style="margin-top:20px">
+  <div class="card">
+    <label style="margin-bottom:10px">Fontes de áudio</label>
+
+    <div class="audio-source">
+      <div class="checkbox-row">
+        <input type="checkbox" id="captureSystem" checked>
+        <label for="captureSystem">Áudio do computador</label>
+      </div>
+      <select id="systemDeviceSelect"><option value="">Padrão do sistema</option></select>
+      <div class="level-row">
+        <span class="level-label">Sistema</span>
+        <div class="level-track"><div class="level-fill" id="systemLevelFill"></div></div>
+      </div>
+    </div>
+
+    <div class="audio-source">
+      <div class="checkbox-row">
+        <input type="checkbox" id="captureMicrophone">
+        <label for="captureMicrophone">Meu microfone</label>
+      </div>
+      <select id="microphoneDeviceSelect"><option value="">Padrão do sistema</option></select>
+      <div class="level-row">
+        <span class="level-label">Microfone</span>
+        <div class="level-track"><div class="level-fill" id="microphoneLevelFill"></div></div>
+      </div>
+    </div>
+
+    <button class="btn-small btn-secondary" id="testAudioBtn" type="button">🎚️ Testar áudio</button>
+    <p class="audio-test-result" id="audioTestResult"></p>
+  </div>
+
+  <div class="card">
+    <div class="actions" style="margin-top:0">
       <span class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Parado</span></span>
       <div style="display:flex;gap:10px">
         <button id="startBtn">▶ Iniciar gravação</button>
@@ -249,6 +293,10 @@ const recoveryCard = $("recoveryCard"), recoveryList = $("recoveryList");
 const folderPath = $("folderPath"), freeSpaceText = $("freeSpaceText"), chooseFolderBtn = $("chooseFolderBtn");
 const manualFolderRow = $("manualFolderRow"), manualFolderInput = $("manualFolderInput");
 const saveManualFolderBtn = $("saveManualFolderBtn"), manualFolderHint = $("manualFolderHint");
+const captureSystem = $("captureSystem"), captureMicrophone = $("captureMicrophone");
+const systemDeviceSelect = $("systemDeviceSelect"), microphoneDeviceSelect = $("microphoneDeviceSelect");
+const systemLevelFill = $("systemLevelFill"), microphoneLevelFill = $("microphoneLevelFill");
+const testAudioBtn = $("testAudioBtn"), audioTestResult = $("audioTestResult");
 let lastLogLength = -1;
 let currentMeetingDir = null;
 let lastSavedAt = null;
@@ -409,6 +457,114 @@ openFolderBtn.addEventListener("click", async () => {
   }
 });
 
+// -- audio: dispositivos, preferencias, teste e medidor de nivel ao vivo --
+
+async function loadAudioDevicesAndConfig() {
+  try {
+    const [devicesRes, configRes] = await Promise.all([fetch("/api/audio/devices"), fetch("/api/audio/config")]);
+    const devices = await devicesRes.json();
+    const config = await configRes.json();
+
+    if (!devices.error) {
+      populateDeviceSelect(systemDeviceSelect, devices.outputs || [], config.system_device_id);
+      populateDeviceSelect(microphoneDeviceSelect, devices.inputs || [], config.microphone_device_id);
+    }
+    captureSystem.checked = config.capture_system;
+    captureMicrophone.checked = config.capture_microphone;
+  } catch (e) {
+    // dispositivos sao um extra na tela inicial -- nao pode quebrar o resto do painel
+  }
+}
+
+function populateDeviceSelect(select, options, selectedId) {
+  const current = select.value;
+  select.innerHTML = '<option value="">Padrão do sistema</option>';
+  for (const device of options) {
+    const opt = document.createElement("option");
+    opt.value = device.id;
+    opt.textContent = device.name + (device.is_default ? " (padrão)" : "");
+    select.appendChild(opt);
+  }
+  select.value = selectedId || current || "";
+}
+
+async function saveAudioConfig() {
+  const payload = {
+    capture_system: captureSystem.checked,
+    capture_microphone: captureMicrophone.checked,
+    system_device_id: systemDeviceSelect.value || null,
+    microphone_device_id: microphoneDeviceSelect.value || null,
+  };
+  try {
+    await fetch("/api/audio/config", { method: "POST", body: JSON.stringify(payload) });
+  } catch (e) {
+    // preferencia so e persistida de novo no proximo /api/start se isto falhar
+  }
+}
+
+for (const el of [captureSystem, captureMicrophone, systemDeviceSelect, microphoneDeviceSelect]) {
+  el.addEventListener("change", saveAudioConfig);
+}
+
+function setLevelBar(fillEl, levelData) {
+  const level = levelData && typeof levelData.level === "number" ? levelData.level : 0;
+  const pct = Math.max(0, Math.min(100, level * 100));
+  fillEl.style.width = pct + "%";
+  fillEl.classList.toggle("clipping", level >= 0.98);
+}
+
+testAudioBtn.addEventListener("click", async () => {
+  testAudioBtn.disabled = true;
+  audioTestResult.textContent = "Testando...";
+  audioTestResult.className = "audio-test-result";
+  try {
+    const payload = {
+      capture_system: captureSystem.checked,
+      capture_microphone: captureMicrophone.checked,
+      system_device_id: systemDeviceSelect.value || null,
+      microphone_device_id: microphoneDeviceSelect.value || null,
+    };
+    const res = await fetch("/api/audio/test", { method: "POST", body: JSON.stringify(payload) });
+    const data = await res.json();
+    const parts = [];
+    if (data.results) {
+      for (const [source, result] of Object.entries(data.results)) {
+        const label = source === "system" ? "Computador" : "Microfone";
+        parts.push(result.ok ? `${label}: OK` : `${label}: ${result.message}`);
+        const fillEl = source === "system" ? systemLevelFill : microphoneLevelFill;
+        setLevelBar(fillEl, result.ok ? { level: result.level } : null);
+      }
+    }
+    audioTestResult.textContent = parts.join(" — ") || data.message || "";
+    audioTestResult.className = "audio-test-result " + (data.ok ? "ok" : "error");
+  } catch (e) {
+    audioTestResult.textContent = "Não foi possível testar o áudio.";
+    audioTestResult.className = "audio-test-result error";
+  } finally {
+    testAudioBtn.disabled = false;
+  }
+});
+
+// medidor ao vivo durante a gravacao (SSE -- ver docs/API.md). Fora de uma
+// gravacao o backend so manda "{}", entao as barras ficam paradas em zero
+// sem gerar nenhum erro; a conexao e reaberta pelo proprio navegador se cair.
+if (typeof EventSource !== "undefined") {
+  try {
+    const levelsStream = new EventSource("/api/audio/levels/stream");
+    levelsStream.onmessage = (event) => {
+      try {
+        const levels = JSON.parse(event.data);
+        setLevelBar(systemLevelFill, levels.system);
+        setLevelBar(microphoneLevelFill, levels.microphone);
+      } catch (e) {
+        // snapshot invalido -- ignora esse evento, o proximo corrige
+      }
+    };
+  } catch (e) {
+    // navegador sem suporte a EventSource -- medidor so funciona via "Testar audio"
+  }
+}
+
 // segundos -> "1m30s" ou "45s", pra barra de progresso do bloco atual
 function formatClock(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -488,6 +644,10 @@ startBtn.addEventListener("click", async () => {
     device: $("device").value,
     chunk_seconds: Number($("chunkSeconds").value) || 300,
     keep_audio: $("keepAudio").checked,
+    capture_system: captureSystem.checked,
+    capture_microphone: captureMicrophone.checked,
+    system_device_id: systemDeviceSelect.value || null,
+    microphone_device_id: microphoneDeviceSelect.value || null,
   };
   startBtn.disabled = true;
   const res = await fetch("/api/start", { method: "POST", body: JSON.stringify(payload) });
@@ -508,6 +668,7 @@ stopBtn.addEventListener("click", async () => {
 refreshStatus();
 refreshRecovery();
 refreshSettings();
+loadAudioDevicesAndConfig();
 setInterval(refreshStatus, 1500);
 setInterval(refreshRecovery, 5000);
 setInterval(refreshSettings, 20000); // reunioes longas: espaco livre precisa ficar atualizado
