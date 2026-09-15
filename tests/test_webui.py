@@ -85,8 +85,14 @@ def _isolated_webui(tmp_path, monkeypatch):
     apontam pra um tmp_path novo a cada teste, subprocess.Popen nunca sobe
     um processo de verdade, e o estado global e resetado."""
     monkeypatch.setattr(webui, "ROOT", tmp_path)
-    monkeypatch.setattr(webui, "MEETINGS_DIR", tmp_path / "data" / "meetings")
     monkeypatch.setattr(webui, "SETTINGS_PATH", tmp_path / "data" / "settings.json")
+    monkeypatch.setattr(webui, "MEETINGS_DIR", tmp_path / "data" / "meetings")
+    # recovery/resume agora derivam as raizes conhecidas de settings.json
+    # (nao so do valor de MEETINGS_DIR em memoria) -- mantem os dois em
+    # sincronia aqui do mesmo jeito que _apply_new_meetings_root faz em
+    # producao, senao os testes acabam varrendo a pasta Documentos/Reunioes
+    # REAL da maquina em vez do tmp_path isolado.
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, webui.MEETINGS_DIR)
     (tmp_path / ".venv").mkdir()  # start_transcriber exige isso existir
 
     created_procs = []
@@ -336,6 +342,114 @@ def test_resume_meeting_launches_subprocess_for_known_session(_isolated_webui):
     ok, msg = webui.resume_meeting("20260101-000000-abcdef")
     assert ok, msg
     assert len(_isolated_webui) == 1
+
+
+# -- recovery multi-root (Fase B.1) --------------------------------------
+
+def test_get_recovery_scans_all_known_roots_not_just_active_one(_isolated_webui, tmp_path):
+    from meeting_transcriber.session import MeetingSession
+
+    old_root = tmp_path / "RaizAntiga"
+    new_root = tmp_path / "RaizNova"
+
+    # simula: usuario gravou em old_root, depois trocou pra new_root
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, old_root)
+    stuck_in_old_root = MeetingSession.create(
+        base_dir=old_root, title="Deixada pra tras", model="small", language="pt", device="cpu"
+    )
+    stuck_in_old_root.mark_recording()
+    from meeting_transcriber.session import mark_interrupted_sessions
+
+    mark_interrupted_sessions(old_root)
+
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, new_root)
+    webui.MEETINGS_DIR = new_root  # troca a raiz ativa, como start_transcriber/_apply_new_meetings_root fariam
+
+    recovery = webui.get_recovery()
+    titles = {s["title"] for s in recovery["sessions"]}
+    assert "Deixada pra tras" in titles
+
+
+def test_resume_meeting_finds_session_left_in_previous_root(_isolated_webui, tmp_path, monkeypatch):
+    from meeting_transcriber.session import MeetingSession, mark_interrupted_sessions
+
+    old_root = tmp_path / "RaizAntiga"
+    new_root = tmp_path / "RaizNova"
+
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, old_root)
+    session = MeetingSession.create(
+        base_dir=old_root, title="Deixada pra tras", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-ffffff",
+    )
+    session.mark_recording()  # grava o pid real deste processo de teste
+    mark_interrupted_sessions(old_root)
+
+    webui.settings.set_meetings_root(webui.SETTINGS_PATH, new_root)
+    webui.MEETINGS_DIR = new_root
+    # este teste e sobre achar a sessao em outra raiz, nao sobre a
+    # checagem de PID (coberta em testes dedicados abaixo) -- sem isto, o
+    # PID real do processo de teste (que esta genuinamente rodando)
+    # dispararia a recusa de seguranca.
+    monkeypatch.setattr(webui, "is_pid_running", lambda pid: False)
+
+    ok, msg = webui.resume_meeting("20260101-000000-ffffff")
+    assert ok, msg
+    cmd = _isolated_webui[0].args
+    assert str(session.meeting_dir) in cmd
+
+
+# -- resume PID safety net (Fase B.1: falhar fechado, sem adotar processo) --
+
+def test_resume_meeting_refuses_when_recorded_pid_still_running(_isolated_webui, monkeypatch):
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="T", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-111111",
+    )
+    session.mark_recording()  # grava um pid de verdade (o deste processo de teste)
+
+    monkeypatch.setattr(webui, "is_pid_running", lambda pid: True)
+
+    ok, msg = webui.resume_meeting("20260101-000000-111111")
+
+    assert not ok
+    assert "PID" in msg
+    assert _isolated_webui == []  # nenhum subprocesso de reprocessamento foi iniciado
+
+
+def test_resume_meeting_allows_when_recorded_pid_not_running(_isolated_webui, monkeypatch):
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="T", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-222222",
+    )
+    session.mark_recording()
+
+    monkeypatch.setattr(webui, "is_pid_running", lambda pid: False)
+
+    ok, msg = webui.resume_meeting("20260101-000000-222222")
+
+    assert ok, msg
+
+
+def test_resume_meeting_allows_when_pid_liveness_cannot_be_determined(_isolated_webui, monkeypatch):
+    """None significa "nao sei dizer" (ex.: plataforma nao suportada) --
+    isso NAO pode bloquear o reprocessamento para sempre."""
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="T", model="small", language="pt", device="cpu",
+        meeting_id="20260101-000000-333333",
+    )
+    session.mark_recording()
+
+    monkeypatch.setattr(webui, "is_pid_running", lambda pid: None)
+
+    ok, msg = webui.resume_meeting("20260101-000000-333333")
+
+    assert ok, msg
     assert "--resume" in _isolated_webui[0].args
 
 

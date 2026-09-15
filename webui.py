@@ -47,6 +47,9 @@ sys.path.insert(0, str(SRC))
 from meeting_transcriber import folder_dialog, settings, validation  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
+    MeetingSession,
+    find_meeting_dir_across_roots,
+    is_pid_running,
     list_sessions,
     mark_interrupted_sessions,
     new_meeting_id,
@@ -427,18 +430,39 @@ def stop_transcriber() -> "tuple[bool, str]":
 def resume_meeting(meeting_id: str) -> "tuple[bool, str]":
     """Sobe `python -m meeting_transcriber --resume <meeting_dir>` para
     reprocessar os blocos pendentes/com falha de uma sessao interrompida.
-    Nao grava audio novo, entao pode rodar mesmo sem microfone/loopback."""
+    Nao grava audio novo, entao pode rodar mesmo sem microfone/loopback.
+
+    A sessao pode estar em QUALQUER raiz ja conhecida (nao so a raiz ativa
+    hoje) -- ver find_meeting_dir_across_roots e docs/RECOVERY.md.
+    """
     try:
         meeting_id = validation.validate_meeting_id(meeting_id)
     except validation.ValidationError as exc:
         return False, str(exc)
 
-    meetings_resolved = MEETINGS_DIR.resolve()
-    meeting_dir = (meetings_resolved / meeting_id).resolve()
-    if meeting_dir.parent != meetings_resolved:
-        return False, "Sessao invalida."
-    if not (meeting_dir / "state.json").exists():
+    roots = settings.get_known_meeting_roots(SETTINGS_PATH)
+    meeting_dir = find_meeting_dir_across_roots(meeting_id, roots)
+    if meeting_dir is None:
         return False, "Sessao nao encontrada."
+
+    # Camada extra de seguranca (nao e adocao de processo -- ver
+    # docs/RECOVERY.md): se o PID registrado na sessao ainda parece estar
+    # rodando, recusa reprocessar. Isso evita dois processos escrevendo no
+    # mesmo state.json/transcript.md ao mesmo tempo caso o processo
+    # original nao tenha realmente morrido (ex.: o painel que perdeu
+    # contato com ele foi o que reiniciou, nao o gravador em si). PID
+    # reciclado pelo SO pode gerar um falso positivo raro (recusa
+    # reprocessar sem necessidade) -- falhar fechado aqui e intencional.
+    try:
+        recorded_pid = MeetingSession.load(meeting_dir).state.get("pid")
+    except (json.JSONDecodeError, OSError, KeyError):
+        recorded_pid = None
+    if recorded_pid and is_pid_running(recorded_pid):
+        return False, (
+            f"Um processo com PID {recorded_pid} ainda parece estar em execucao para esta "
+            "sessao. Para evitar dois processos escrevendo os mesmos arquivos ao mesmo tempo, "
+            "verifique o Gerenciador de Tarefas antes de reprocessar."
+        )
 
     with state_lock:
         if state["proc"] is not None:
@@ -507,8 +531,21 @@ def get_recovery() -> dict:
     """Sessoes que ficaram travadas em recording/processing e foram
     marcadas como interrompidas na inicializacao do painel (ver `main`) —
     ou seja, reunioes cujo processo morreu sem finalizar. O audio e a
-    transcricao parcial de cada uma continuam intactos em disco."""
-    sessions = [s for s in list_sessions(MEETINGS_DIR) if s.get("status") == STATUS_INTERRUPTED]
+    transcricao parcial de cada uma continuam intactos em disco.
+
+    Varre TODAS as raizes ja conhecidas (nao so a raiz ativa hoje) -- se o
+    usuario gravou em D:\\Reunioes e depois trocou para E:\\Reunioes, uma
+    sessao interrompida deixada em D: continua aparecendo aqui. Nunca varre
+    nada fora dessas raizes explicitamente escolhidas alguma vez.
+    """
+    sessions = []
+    for root in settings.get_known_meeting_roots(SETTINGS_PATH):
+        if not root.exists():
+            continue
+        try:
+            sessions.extend(s for s in list_sessions(root) if s.get("status") == STATUS_INTERRUPTED)
+        except OSError:
+            continue
     return {"sessions": sessions}
 
 
@@ -700,8 +737,16 @@ def main() -> None:
     # nossa -- ou seja, nenhum outro processo deste painel pode estar com
     # uma sessao de verdade em andamento neste exato momento. Qualquer
     # reuniao ainda travada em recording/processing so pode ser sobra de um
-    # processo anterior que morreu sem finalizar.
-    recovered = mark_interrupted_sessions(MEETINGS_DIR)
+    # processo anterior que morreu sem finalizar. Varre TODAS as raizes
+    # conhecidas, nao so a ativa (ver docs/RECOVERY.md).
+    recovered = []
+    for root in settings.get_known_meeting_roots(SETTINGS_PATH):
+        if not root.exists():
+            continue
+        try:
+            recovered.extend(mark_interrupted_sessions(root))
+        except OSError:
+            continue
     for entry in recovered:
         logger.warning(
             "Sessao interrompida detectada: %s (%s) — %d/%d blocos transcritos.",
