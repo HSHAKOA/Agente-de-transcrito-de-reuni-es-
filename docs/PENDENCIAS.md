@@ -2,7 +2,15 @@
 
 Priorização honesta do que falta, ao final desta sessão. Nada aqui foi
 escondido: cada item também aparece na fase correspondente
-(`docs/ROADMAP.md`) e no relatório final da missão.
+(`docs/ROADMAP.md`) e no relatório final da missão. Também
+acompanhadas como [Issues no GitHub](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues)
+(agrupadas, não uma por item):
+
+- [#1](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/1) — Telas de produto React (P1)
+- [#2](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/2) — Migração de schedules + Task Scheduler (P1)
+- [#3](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/3) — Meeting Intelligence (P2)
+- [#4](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/4) — Diarização completa + empacotamento (P2)
+- [#5](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/5) — DOCX/PDF + polimento (P2/P3)
 
 ## P0 — bloqueiam uma demonstração completa
 
