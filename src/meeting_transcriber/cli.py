@@ -15,6 +15,7 @@ proxima inicializacao do app.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import queue
@@ -25,6 +26,12 @@ import threading
 from pathlib import Path
 from typing import Optional, Sequence
 
+from .audio.devices import check_device_health
+from .audio.dual_capture import dual_recording_worker
+from .audio.levels import LevelMeter, compute_rms, normalize_level
+from .audio.loopback import make_loopback_mic_factory
+from .audio.microphone import make_microphone_factory
+from .audio_capture import SAMPLE_RATE
 from .markdown_writer import MarkdownWriter
 from .recorder import RecordedChunk, recording_worker
 from .session import STATUS_FAILED, MeetingSession
@@ -72,6 +79,47 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Nao grava audio novo: so reprocessa os blocos pendentes/com falha de uma sessao "
         "existente em MEETING_DIR e finaliza. Usado para recuperar uma sessao interrompida.",
     )
+    parser.add_argument(
+        "--capture-system",
+        dest="capture_system",
+        action="store_true",
+        default=True,
+        help="Captura o audio de saida do sistema via loopback (padrao: ligado, comportamento original)",
+    )
+    parser.add_argument(
+        "--no-capture-system",
+        dest="capture_system",
+        action="store_false",
+        help="Desativa a captura do audio do sistema (use com --capture-microphone para gravar so o microfone)",
+    )
+    parser.add_argument(
+        "--capture-microphone",
+        dest="capture_microphone",
+        action="store_true",
+        default=False,
+        help="Ativa a captura do microfone. Combinado com --capture-system (o padrao), grava as duas "
+        "fontes simultaneamente e mixa; sozinho, grava so o microfone.",
+    )
+    parser.add_argument(
+        "--system-device",
+        default=None,
+        metavar="DEVICE_ID",
+        help="ID do dispositivo de saida para loopback (padrao: dispositivo de saida padrao do sistema)",
+    )
+    parser.add_argument(
+        "--microphone-device",
+        default=None,
+        metavar="DEVICE_ID",
+        help="ID do microfone de entrada (padrao: microfone padrao do sistema)",
+    )
+    parser.add_argument(
+        "--levels-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Arquivo onde escrever, periodicamente e de forma atomica, um snapshot JSON do nivel de "
+        "audio de cada fonte (usado pelo medidor de audio do painel). Apagado ao final da sessao.",
+    )
     return parser.parse_args(argv)
 
 
@@ -110,6 +158,36 @@ def _register_shutdown_signals(handler) -> None:
     signal.signal(signal.SIGINT, handler)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, handler)
+
+
+def _write_levels_snapshot(level_meter: LevelMeter, levels_file: Path) -> None:
+    """Escrita atomica (mesmo padrao de session.py/settings.py): grava num
+    arquivo temporario e substitui com `os.replace`. levels.json e lido com
+    muito mais frequencia que state.json (varias vezes por segundo pelo
+    stream do painel), entao nunca pode aparecer pela metade pro leitor."""
+    tmp_path = levels_file.with_name(levels_file.name + f".tmp-{os.getpid()}")
+    tmp_path.write_text(json.dumps(level_meter.snapshot()), encoding="utf-8")
+    os.replace(tmp_path, levels_file)
+
+
+def _levels_writer_loop(
+    level_meter: LevelMeter, levels_file: Path, stop_event: threading.Event, interval: float = 0.2
+) -> None:
+    """Roda numa thread dedicada, escrevendo o snapshot mais recente do
+    `level_meter` em `levels_file` a cada `interval` segundos ate
+    `stop_event` ser sinalizado. `webui.py` streama o conteudo desse
+    arquivo via SSE -- ver docs/API.md.
+    """
+    levels_file.parent.mkdir(parents=True, exist_ok=True)
+    while not stop_event.wait(interval):
+        try:
+            _write_levels_snapshot(level_meter, levels_file)
+        except OSError:
+            logger.exception("Falha ao escrever %s", levels_file)
+    try:
+        _write_levels_snapshot(level_meter, levels_file)  # ultima escrita, com o estado final
+    except OSError:
+        pass
 
 
 def run_resume(meeting_dir: Path) -> int:
@@ -194,14 +272,47 @@ def run(args: argparse.Namespace) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    if not args.capture_system and not args.capture_microphone:
+        # nunca comecar uma sessao sem nenhuma fonte de audio -- a
+        # prioridade maxima da missao e "nunca deixar o usuario achar que
+        # esta gravando quando nao ha audio nenhum sendo capturado".
+        logger.error(
+            "Nenhuma fonte de audio habilitada (--capture-system/--capture-microphone) -- nada para gravar."
+        )
+        return 1
+    dual_mode = args.capture_system and args.capture_microphone
+
     language = None if args.language.lower() == "auto" else args.language
     keep_audio = not args.no_keep_audio
 
-    # pasta onde os .wav de cada bloco ficam guardados durante a sessao
+    # Health check ANTES de criar qualquer arquivo (missao, secao "Health
+    # check antes de gravar"): resolve e testa cada dispositivo habilitado
+    # de verdade (abre um stream curto, le alguns frames, fecha) -- nunca
+    # inicia a sessao silenciosamente se o dispositivo escolhido nao existe
+    # ou nao abre.
+    system_device_id = system_device_name = None
+    microphone_device_id = microphone_device_name = None
+    if args.capture_system:
+        health = check_device_health("output", args.system_device, SAMPLE_RATE)
+        if not health.ok:
+            logger.error("Audio do sistema indisponivel (%s): %s", health.code, health.message)
+            return 1
+        system_device_id, system_device_name = health.device_id, health.device_name
+    if args.capture_microphone:
+        health = check_device_health("input", args.microphone_device, SAMPLE_RATE)
+        if not health.ok:
+            logger.error("Microfone indisponivel (%s): %s", health.code, health.message)
+            return 1
+        microphone_device_id, microphone_device_name = health.device_id, health.device_name
+
+    # pasta onde os .wav de cada bloco ficam guardados durante a sessao --
+    # "audio/" (com subpastas system/microphone/mixed) quando as duas
+    # fontes estao ativas, "chunks/" (layout original, uma fonte so) caso
+    # contrario -- nunca muda o layout de quem so usa o caminho de sempre.
     if args.work_dir is not None:
         work_dir = args.work_dir
     elif args.meeting_dir is not None:
-        work_dir = args.meeting_dir / "chunks"
+        work_dir = args.meeting_dir / ("audio" if dual_mode else "chunks")
     else:
         work_dir = Path(tempfile.mkdtemp(prefix="meeting_transcriber_"))
     # so apagamos a pasta inteira no final se foi criada so pra essa execucao
@@ -238,6 +349,14 @@ def run(args: argparse.Namespace) -> int:
                 device=args.device,
                 transcript_path=args.output.resolve(),
                 meeting_id=args.meeting_dir.name,
+                system_audio_enabled=args.capture_system,
+                system_device_id=system_device_id,
+                system_device_name=system_device_name,
+                microphone_enabled=args.capture_microphone,
+                microphone_device_id=microphone_device_id,
+                microphone_device_name=microphone_device_name,
+                audio_sample_rate=SAMPLE_RATE,
+                audio_backend="soundcard",
             )
 
     stop_event = threading.Event()  # sinaliza pra thread de gravacao parar
@@ -245,18 +364,63 @@ def run(args: argparse.Namespace) -> int:
 
     _register_shutdown_signals(_make_shutdown_handler(stop_event))
 
-    def _on_chunk_recorded(chunk: RecordedChunk) -> None:
+    level_meter = LevelMeter()
+
+    def _on_single_chunk_recorded(chunk: RecordedChunk) -> None:
         if session is not None:
+            session.mark_chunk_recorded(chunk.index, chunk.path, chunk.start_offset_seconds, chunk.duration_seconds)
+
+    def _on_dual_chunk_recorded(source: str, chunk: RecordedChunk) -> None:
+        # so o chunk MIXADO conta pro progresso da sessao -- e o que
+        # efetivamente entra na fila de transcricao; os brutos
+        # "system"/"microphone" sao so artefatos intermediarios em disco.
+        if session is not None and source == "mixed":
             session.mark_chunk_recorded(chunk.index, chunk.path, chunk.start_offset_seconds, chunk.duration_seconds)
 
     # a gravacao roda em thread separada da transcricao (ver recorder.py):
     # gravar nunca espera transcrever, e vice-versa.
-    recorder_thread = threading.Thread(
-        target=recording_worker,
-        args=(work_dir, args.chunk_seconds, stop_event, chunk_queue),
-        kwargs={"on_chunk_recorded": _on_chunk_recorded},
-        daemon=True,
-    )
+    if dual_mode:
+        recorder_thread = threading.Thread(
+            target=dual_recording_worker,
+            args=(work_dir, args.chunk_seconds, stop_event, chunk_queue),
+            kwargs=dict(
+                system_mic_factory=make_loopback_mic_factory(args.system_device),
+                microphone_mic_factory=make_microphone_factory(args.microphone_device),
+                samplerate=SAMPLE_RATE,
+                on_chunk_recorded=_on_dual_chunk_recorded,
+                on_level=level_meter.update,
+            ),
+            daemon=True,
+        )
+    elif args.capture_microphone:
+        recorder_thread = threading.Thread(
+            target=recording_worker,
+            args=(work_dir, args.chunk_seconds, stop_event, chunk_queue),
+            kwargs=dict(
+                mic_factory=make_microphone_factory(args.microphone_device),
+                on_chunk_recorded=_on_single_chunk_recorded,
+                on_block=lambda block: level_meter.update("microphone", normalize_level(compute_rms(block))),
+            ),
+            daemon=True,
+        )
+    else:
+        # caminho original (so sistema, dispositivo padrao): preserva
+        # `mic_factory` no valor padrao de `recording_worker`
+        # (`get_loopback_microphone`) quando nenhum dispositivo especifico
+        # foi pedido, em vez de trocar por uma resolucao equivalente porem
+        # nao identica -- zero risco de mudar o comportamento ja testado.
+        recorder_kwargs = dict(
+            on_chunk_recorded=_on_single_chunk_recorded,
+            on_block=lambda block: level_meter.update("system", normalize_level(compute_rms(block))),
+        )
+        if args.system_device is not None:
+            recorder_kwargs["mic_factory"] = make_loopback_mic_factory(args.system_device)
+        recorder_thread = threading.Thread(
+            target=recording_worker,
+            args=(work_dir, args.chunk_seconds, stop_event, chunk_queue),
+            kwargs=recorder_kwargs,
+            daemon=True,
+        )
 
     writer = MarkdownWriter(args.output, args.title, args.model, language)  # ja cria o .md com cabecalho
 
@@ -273,7 +437,21 @@ def run(args: argparse.Namespace) -> int:
             session.mark_failed(f"Falha ao carregar o modelo Whisper: {exc}")
         return 1
 
-    logger.info("Gravando audio do sistema. Pressione Ctrl+C para parar e finalizar a transcricao.")
+    levels_writer_stop = threading.Event()
+    levels_writer_thread: Optional[threading.Thread] = None
+    if args.levels_file is not None:
+        levels_writer_thread = threading.Thread(
+            target=_levels_writer_loop,
+            args=(level_meter, args.levels_file, levels_writer_stop),
+            daemon=True,
+        )
+        levels_writer_thread.start()
+
+    logger.info(
+        "Gravando (sistema=%s, microfone=%s). Pressione Ctrl+C para parar e finalizar a transcricao.",
+        args.capture_system,
+        args.capture_microphone,
+    )
     if session is not None:
         session.mark_recording()
     recorder_thread.start()
@@ -282,8 +460,25 @@ def run(args: argparse.Namespace) -> int:
     try:
         # loop principal: consome blocos gravados da fila, transcreve e
         # anexa ao markdown, um por um, ate a gravacao sinalizar fim (None).
+        #
+        # `chunk_queue.get()` sem timeout ficaria bloqueado ate o PROXIMO
+        # item chegar -- e no Windows, o interpretador so processa um sinal
+        # pendente (Ctrl+C, ou CTRL_BREAK_EVENT vindo do painel) quando a
+        # thread PRINCIPAL retorna pra avaliar bytecode Python. Com
+        # chunk_seconds grande (ate 1800s), a thread principal podia ficar
+        # parada nesse get() por ate 30 minutos antes de sequer ter a chance
+        # de notar que alguem pediu pra parar -- confirmado na pratica
+        # durante esta fase (um teste real com hardware, usando sinal real,
+        # so terminou apos o chunk_seconds inteiro, nao em segundos como
+        # esperado). Um timeout curto aqui garante que a thread principal
+        # volta a rodar bytecode Python periodicamente, dando ao
+        # interpretador a chance de processar o sinal pendente sem afetar o
+        # comportamento normal (nada muda quando ha itens disponiveis).
         while True:
-            chunk = chunk_queue.get()  # bloqueia ate ter um bloco pronto (ou None = acabou)
+            try:
+                chunk = chunk_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
             if chunk is None:
                 break
             logger.info("Transcrevendo bloco %d (%.1fs)...", chunk.index, chunk.duration_seconds)
@@ -310,7 +505,16 @@ def run(args: argparse.Namespace) -> int:
         # roda mesmo se o loop acima quebrar por excecao: garante que o
         # markdown fecha corretamente e a pasta temporaria e limpa.
         writer.finalize(total_duration)
-        recorder_thread.join(timeout=5)
+        # dual_recording_worker junta suas DUAS threads internas (ate
+        # _THREAD_JOIN_TIMEOUT_SECONDS cada) depois de emitir o sentinel --
+        # o join externo aqui precisa cobrir esse tempo, senao arriscamos
+        # seguir pra limpeza/rmtree enquanto as threads de captura ainda
+        # estao terminando.
+        recorder_thread.join(timeout=25 if dual_mode else 5)
+        if levels_writer_thread is not None:
+            levels_writer_stop.set()
+            levels_writer_thread.join(timeout=2)
+            args.levels_file.unlink(missing_ok=True)
         if own_work_dir and keep_audio:
             logger.info("Blocos de audio preservados em %s", work_dir)
         elif own_work_dir:
