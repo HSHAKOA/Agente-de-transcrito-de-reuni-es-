@@ -199,7 +199,7 @@ def test_dual_capture_calls_on_chunk_recorded_for_each_source(tmp_path: Path):
     )
 
     sources_seen = {s for s, _ in seen}
-    assert sources_seen == {"system", "microphone"}
+    assert sources_seen == {"system", "microphone", "mixed"}
 
 
 def test_dual_capture_calls_on_level_for_each_source(tmp_path: Path):

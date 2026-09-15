@@ -136,7 +136,7 @@ def dual_recording_worker(
     microphone_thread.start()
 
     try:
-        _mix_loop(system_queue, microphone_queue, mixed_dir, samplerate, out_queue)
+        _mix_loop(system_queue, microphone_queue, mixed_dir, samplerate, out_queue, on_chunk_recorded)
     finally:
         # garante que as duas threads de captura realmente pararam antes
         # de devolver o controle, mesmo se o mixer sair mais cedo por
@@ -158,12 +158,18 @@ def _mix_loop(
     mixed_dir: Path,
     samplerate: int,
     out_queue: "queue.Queue[Optional[RecordedChunk]]",
+    on_chunk_recorded: Optional[Callable[[str, RecordedChunk], None]] = None,
 ) -> None:
     """Pareia chunks das duas filas por ordem de chegada (indice) e produz
     um chunk mixado por par. Se uma fonte termina (sentinela None) antes
     da outra, ela passa a ser tratada como silencio para os chunks
     restantes da outra -- nunca fica esperando um chunk que nao vai mais
     chegar (o que travaria o encerramento gracioso pra sempre).
+
+    Chama `on_chunk_recorded("mixed", chunk)` para cada chunk mixado
+    produzido -- e esse evento (nao os brutos "system"/"microphone") que
+    `cli.py` usa pra rastrear o progresso da sessao, ja que e o chunk
+    MIXADO que efetivamente entra na fila de transcricao.
     """
     system_alive = True
     microphone_alive = True
@@ -190,6 +196,11 @@ def _mix_loop(
                 continue
 
             index += 1
+            if on_chunk_recorded is not None:
+                try:
+                    on_chunk_recorded("mixed", mixed)
+                except Exception:
+                    logger.exception("Falha ao notificar chunk mixado %d", mixed.index)
             out_queue.put(mixed)
     finally:
         out_queue.put(None)
