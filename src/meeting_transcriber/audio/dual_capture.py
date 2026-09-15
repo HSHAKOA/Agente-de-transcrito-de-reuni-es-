@@ -120,9 +120,27 @@ def dual_recording_worker(
         if on_raw_block is not None:
             on_raw_block("microphone", block)
 
+    def _run_source(label: str, *args, **kwargs) -> None:
+        """Wrapper de topo de thread: `recording_worker` propaga excecao
+        pro chamador direto por design (ver docs/API.md e o teste
+        `test_device_open_failure_still_emits_sentinel_instead_of_hanging`
+        -- util pro caminho de fonte UNICA, chamado direto, sem thread
+        propria). Aqui SIM ha uma thread dedicada por fonte -- se
+        `recording_worker` propagasse a excecao pra fora dela sem
+        tratamento, o Python reportaria como thread exception nao tratada
+        (traceback perdido em producao / PytestUnhandledThreadExceptionWarning
+        nos testes). `recording_worker` ja garante (via seu proprio
+        `finally`) que o sentinel `None` chega na fila mesmo em caso de
+        falha -- so falta registrar o erro e deixar ESTA fonte encerrar,
+        enquanto a outra (se houver) continua normalmente."""
+        try:
+            recording_worker(*args, **kwargs)
+        except Exception:
+            logger.exception("Falha na captura de audio da fonte '%s'; encerrando esta fonte.", label)
+
     system_thread = threading.Thread(
-        target=recording_worker,
-        args=(system_dir, chunk_seconds, stop_event, system_queue),
+        target=_run_source,
+        args=("system", system_dir, chunk_seconds, stop_event, system_queue),
         kwargs=dict(
             samplerate=samplerate,
             mic_factory=system_mic_factory,
@@ -133,8 +151,8 @@ def dual_recording_worker(
         name="audio-capture-system",
     )
     microphone_thread = threading.Thread(
-        target=recording_worker,
-        args=(microphone_dir, chunk_seconds, stop_event, microphone_queue),
+        target=_run_source,
+        args=("microphone", microphone_dir, chunk_seconds, stop_event, microphone_queue),
         kwargs=dict(
             samplerate=samplerate,
             mic_factory=microphone_mic_factory,
