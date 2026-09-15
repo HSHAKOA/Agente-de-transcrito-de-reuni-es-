@@ -172,8 +172,14 @@ class MeetingSession:
         device: str,
         transcript_path: Optional[Path] = None,
         meeting_id: Optional[str] = None,
-        system_audio_device: Optional[str] = None,
-        microphone_device: Optional[str] = None,
+        system_audio_enabled: Optional[bool] = None,
+        system_device_id: Optional[str] = None,
+        system_device_name: Optional[str] = None,
+        microphone_enabled: Optional[bool] = None,
+        microphone_device_id: Optional[str] = None,
+        microphone_device_name: Optional[str] = None,
+        audio_sample_rate: Optional[int] = None,
+        audio_backend: Optional[str] = None,
     ) -> "MeetingSession":
         meeting_id = meeting_id or new_meeting_id()
         meeting_dir = base_dir / meeting_id
@@ -195,11 +201,17 @@ class MeetingSession:
             # dependerem de reconstruir o caminho a partir de outra fonte.
             "root_directory": str(base_dir.resolve()),
             "meeting_directory": str(meeting_dir.resolve()),
-            # ainda nao usados (captura hoje e so loopback do sistema) --
-            # reservados pra Fase C (microfone + selecao de dispositivo),
-            # ja no formato final pra nao exigir migracao de schema depois.
-            "system_audio_device": system_audio_device,
-            "microphone_device": microphone_device,
+            # dispositivos de audio usados nesta sessao -- None quando nao
+            # informado (chamador antigo, ou fonte desabilitada). Ajuda
+            # diagnostico e recuperacao (Fase C, secao "Estado da reuniao").
+            "system_audio_enabled": system_audio_enabled,
+            "system_device_id": system_device_id,
+            "system_device_name": system_device_name,
+            "microphone_enabled": microphone_enabled,
+            "microphone_device_id": microphone_device_id,
+            "microphone_device_name": microphone_device_name,
+            "audio_sample_rate": audio_sample_rate,
+            "audio_backend": audio_backend,
         }
         _atomic_write_json(session.metadata_path, session._metadata)
 

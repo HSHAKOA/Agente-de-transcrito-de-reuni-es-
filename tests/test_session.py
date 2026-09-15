@@ -115,8 +115,31 @@ def test_create_writes_metadata_and_state(tmp_path: Path):
     assert session.metadata["title"] == "Reuniao de teste"
     assert session.metadata["root_directory"] == str(tmp_path.resolve())
     assert session.metadata["meeting_directory"] == str(session.meeting_dir.resolve())
-    assert session.metadata["system_audio_device"] is None
-    assert session.metadata["microphone_device"] is None
+    assert session.metadata["system_audio_enabled"] is None
+    assert session.metadata["system_device_id"] is None
+    assert session.metadata["system_device_name"] is None
+    assert session.metadata["microphone_enabled"] is None
+    assert session.metadata["microphone_device_id"] is None
+    assert session.metadata["microphone_device_name"] is None
+    assert session.metadata["audio_sample_rate"] is None
+    assert session.metadata["audio_backend"] is None
+
+
+def test_create_stores_audio_device_metadata_when_provided(tmp_path: Path):
+    session = MeetingSession.create(
+        base_dir=tmp_path, title="T", model="small", language="pt", device="cpu",
+        system_audio_enabled=True, system_device_id="spk-1", system_device_name="Alto-falantes",
+        microphone_enabled=True, microphone_device_id="mic-1", microphone_device_name="Microfone USB",
+        audio_sample_rate=16000, audio_backend="soundcard",
+    )
+    assert session.metadata["system_audio_enabled"] is True
+    assert session.metadata["system_device_id"] == "spk-1"
+    assert session.metadata["system_device_name"] == "Alto-falantes"
+    assert session.metadata["microphone_enabled"] is True
+    assert session.metadata["microphone_device_id"] == "mic-1"
+    assert session.metadata["microphone_device_name"] == "Microfone USB"
+    assert session.metadata["audio_sample_rate"] == 16000
+    assert session.metadata["audio_backend"] == "soundcard"
 
 
 def test_full_lifecycle_marks_completed(tmp_path: Path):
