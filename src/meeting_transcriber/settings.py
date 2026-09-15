@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 SETTINGS_FILE_NAME = "settings.json"
 
@@ -41,13 +42,34 @@ def load(settings_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay: float = 0.05) -> None:
+    """`os.replace()` no Windows pode falhar transitoriamente logo apos o
+    destino ser criado/escrito (ex.: antivirus/indexador segurando um
+    handle nele por uma fracao de segundo) -- observado na pratica durante
+    esta fase, num teste com varias reunioes/escritas concorrentes.
+    Algumas tentativas com um atraso minimo resolvem isso sem mascarar uma
+    falha real (permissao de verdade, disco cheio): se todas as tentativas
+    falharem, a excecao original ainda propaga."""
+    last_exc: Optional[OSError] = None
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
+
+
 def save(settings_path: Path, data: dict) -> None:
     """Escrita atomica (tmp file + os.replace), mesmo padrao usado em
     session.py — settings.json nunca deve ficar corrompido pela metade."""
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = settings_path.with_name(settings_path.name + f".tmp-{os.getpid()}")
     tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, settings_path)
+    _replace_with_retry(tmp_path, settings_path)
 
 
 def get_meetings_root(settings_path: Path) -> Path:
@@ -146,3 +168,49 @@ def forget_meeting_root(settings_path: Path, root) -> bool:
     data["known_meeting_roots"] = new_known
     save(settings_path, data)
     return True
+
+
+# Preferencias de audio (Fase C, secao "Configuracoes"): ultimo microfone,
+# ultimo dispositivo de saida, e se cada fonte deve vir habilitada por
+# padrao na proxima reuniao.
+DEFAULT_AUDIO_PREFERENCES = {
+    "capture_system": True,
+    "capture_microphone": False,
+    "system_device_id": None,
+    "microphone_device_id": None,
+}
+
+
+def get_audio_preferences(settings_path: Path) -> dict:
+    """Preferencias salvas, com os padroes preenchidos pra qualquer chave
+    ausente/nunca salva. Nao valida se o dispositivo salvo ainda existe --
+    isso e responsabilidade de quem VAI USAR a preferencia (webui.py, na
+    hora de iniciar uma gravacao ou popular a UI), nunca de quem le/grava
+    a configuracao."""
+    data = load(settings_path)
+    prefs = dict(DEFAULT_AUDIO_PREFERENCES)
+    stored = data.get("audio_preferences")
+    if isinstance(stored, dict):
+        for key in DEFAULT_AUDIO_PREFERENCES:
+            if key in stored:
+                prefs[key] = stored[key]
+    return prefs
+
+
+def set_audio_preferences(settings_path: Path, **updates) -> dict:
+    """Atualiza so as chaves passadas (demais preferencias existentes sao
+    preservadas). Chaves desconhecidas sao ignoradas silenciosamente --
+    isto e um merge parcial controlado, nao uma substituicao total."""
+    data = load(settings_path)
+    prefs = dict(DEFAULT_AUDIO_PREFERENCES)
+    stored = data.get("audio_preferences")
+    if isinstance(stored, dict):
+        for key in DEFAULT_AUDIO_PREFERENCES:
+            if key in stored:
+                prefs[key] = stored[key]
+    for key, value in updates.items():
+        if key in DEFAULT_AUDIO_PREFERENCES:
+            prefs[key] = value
+    data["audio_preferences"] = prefs
+    save(settings_path, data)
+    return prefs

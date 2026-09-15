@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from meeting_transcriber import settings
 
@@ -31,6 +34,40 @@ def test_save_is_atomic_no_leftover_tmp_files(tmp_path: Path):
     settings.save(path, {"a": 2})
     leftovers = list(tmp_path.glob("*.tmp-*"))
     assert leftovers == []
+
+
+def test_save_retries_transient_replace_failure(tmp_path: Path, monkeypatch):
+    """os.replace() pode falhar transitoriamente no Windows (antivirus/
+    indexador segurando um handle no destino por uma fracao de segundo) --
+    observado na pratica; save() deve absorver algumas falhas passageiras
+    em vez de propagar na primeira tentativa."""
+    path = tmp_path / "settings.json"
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def _flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("acesso negado (simulado)")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(settings.os, "replace", _flaky_replace)
+    settings.save(path, {"a": 1})
+
+    assert calls["n"] == 3
+    assert settings.load(path) == {"a": 1}
+
+
+def test_save_gives_up_after_exhausting_retries(tmp_path: Path, monkeypatch):
+    path = tmp_path / "settings.json"
+
+    def _always_fails(src, dst):
+        raise PermissionError("acesso negado (simulado, permanente)")
+
+    monkeypatch.setattr(settings.os, "replace", _always_fails)
+
+    with pytest.raises(PermissionError):
+        settings.save(path, {"a": 1})
 
 
 def test_get_meetings_root_uses_default_when_unset(tmp_path: Path):
@@ -141,3 +178,51 @@ def test_forget_meeting_root_returns_false_when_not_known(tmp_path: Path):
     settings_path = tmp_path / "settings.json"
     settings.set_meetings_root(settings_path, tmp_path / "A")
     assert settings.forget_meeting_root(settings_path, tmp_path / "NuncaFoiUsada") is False
+
+
+# -- preferencias de audio -----------------------------------------------
+
+def test_get_audio_preferences_defaults_when_unset(tmp_path: Path):
+    prefs = settings.get_audio_preferences(tmp_path / "settings.json")
+    assert prefs == {
+        "capture_system": True,
+        "capture_microphone": False,
+        "system_device_id": None,
+        "microphone_device_id": None,
+    }
+
+
+def test_set_audio_preferences_partial_update_preserves_others(tmp_path: Path):
+    settings_path = tmp_path / "settings.json"
+    settings.set_audio_preferences(settings_path, capture_microphone=True, microphone_device_id="mic-1")
+    settings.set_audio_preferences(settings_path, system_device_id="spk-2")
+
+    prefs = settings.get_audio_preferences(settings_path)
+    assert prefs["capture_microphone"] is True
+    assert prefs["microphone_device_id"] == "mic-1"
+    assert prefs["system_device_id"] == "spk-2"
+    assert prefs["capture_system"] is True  # nao tocado, continua o padrao
+
+
+def test_set_audio_preferences_ignores_unknown_keys(tmp_path: Path):
+    settings_path = tmp_path / "settings.json"
+    settings.set_audio_preferences(settings_path, nonsense_key="qualquer coisa")
+    prefs = settings.get_audio_preferences(settings_path)
+    assert "nonsense_key" not in prefs
+
+
+def test_audio_preferences_persist_across_reads(tmp_path: Path):
+    settings_path = tmp_path / "settings.json"
+    settings.set_audio_preferences(settings_path, capture_system=False, capture_microphone=True)
+    reloaded = settings.get_audio_preferences(settings_path)
+    assert reloaded["capture_system"] is False
+    assert reloaded["capture_microphone"] is True
+
+
+def test_audio_preferences_coexist_with_meetings_root(tmp_path: Path):
+    settings_path = tmp_path / "settings.json"
+    settings.set_meetings_root(settings_path, tmp_path / "Raiz")
+    settings.set_audio_preferences(settings_path, capture_microphone=True)
+
+    assert settings.get_meetings_root(settings_path) == (tmp_path / "Raiz").resolve()
+    assert settings.get_audio_preferences(settings_path)["capture_microphone"] is True
