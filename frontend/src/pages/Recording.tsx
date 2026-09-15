@@ -22,7 +22,6 @@ function meetingFolderName(meetingDir: string | null): string {
 
 interface RecordingProps {
   status: StatusResponse;
-  onStopped: () => void;
 }
 
 /**
@@ -30,28 +29,41 @@ interface RecordingProps {
  * aparece enquanto `status.running` é verdadeiro (ver App.tsx). Todo o
  * conteúdo em tempo real vem de SSE (níveis de áudio + transcrição ao
  * vivo, Fases C/D), nunca de polling manual espalhado no componente.
+ *
+ * Não recebe `onStopped`: a navegação de volta pro Dashboard é decidida
+ * SÓ por App.tsx observando `status.running` via polling (correção
+ * pós-auditoria P1-5) -- chamar uma navegação local aqui, imediatamente
+ * após POST /api/stop retornar 200, escondia o usuário do encerramento
+ * gracioso real (que pode levar até ~35s) atrás de uma Dashboard que
+ * ainda mostrava "Gravando agora".
  */
-export function Recording({ status, onStopped }: RecordingProps) {
+export function Recording({ status }: RecordingProps) {
   const elapsed = useElapsedSeconds(status.started_at);
   const { data: levels } = useAudioLevels(true);
   const { data: liveTranscription } = useLiveTranscriptionStream(true);
-  const [stopping, setStopping] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
 
+  // otimista (setado no clique, antes do backend confirmar) OU refletindo
+  // o `state["stopping"]` real do backend -- cobre tanto a janela entre o
+  // clique e o próximo poll quanto o resto do encerramento gracioso.
+  const stopping = stopRequested || status.stopping;
+
   async function handleStop() {
-    setStopping(true);
+    if (stopping) return; // trava duplo clique: nunca manda um segundo /api/stop
+    setStopRequested(true);
     setStopError(null);
     try {
       const result = await api.stopMeeting();
       if (!result.ok) {
         setStopError(result.message);
-        setStopping(false);
-        return;
+        setStopRequested(false);
       }
-      onStopped();
+      // sucesso: nao navega daqui -- App.tsx volta pro Dashboard sozinho
+      // quando status.running realmente virar false.
     } catch {
       setStopError("Não foi possível parar a gravação.");
-      setStopping(false);
+      setStopRequested(false);
     }
   }
 
@@ -134,6 +146,12 @@ export function Recording({ status, onStopped }: RecordingProps) {
         </div>
       )}
 
+      {stopping && (
+        <div className="mt-4 rounded-lg border border-amber-800/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+          Finalizando reunião... Salvando o último bloco e concluindo a transcrição.
+        </div>
+      )}
+
       {stopError && <p className="mt-4 text-sm text-red-400">{stopError}</p>}
 
       <button
@@ -142,7 +160,7 @@ export function Recording({ status, onStopped }: RecordingProps) {
         className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg border border-red-800/60 bg-red-950/40 px-4 py-2.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-950/70 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Square className="size-3.5 fill-current" />
-        {stopping ? "Parando…" : "Parar reunião"}
+        {stopping ? "Finalizando…" : "Parar reunião"}
       </button>
     </div>
   );

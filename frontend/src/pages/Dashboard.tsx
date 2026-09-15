@@ -229,7 +229,7 @@ export function Dashboard({
           className="mb-4 flex w-full items-center gap-2 rounded-lg border border-red-800/50 bg-red-950/30 px-4 py-2.5 text-left text-sm text-red-300 transition-colors hover:bg-red-950/50"
         >
           <CircleDot className="size-3 animate-pulse fill-red-400 text-red-400" />
-          Gravando agora — {status.output_path ?? "reunião em andamento"}
+          {status.stopping ? "Finalizando gravação…" : `Gravando agora — ${status.output_path ?? "reunião em andamento"}`}
         </button>
       )}
 
