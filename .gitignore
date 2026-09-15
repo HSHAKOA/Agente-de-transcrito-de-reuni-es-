@@ -24,6 +24,15 @@ __pycache__/
 !/CHANGELOG.md
 !/CONTRIBUTING.md
 
+# transcricao pessoal real sem extensao (mesma anotacao de aula que as
+# regras de *.md acima ja cobrem quando salva com extensao) -- ignorada
+# pelo nome exato, nao por uma regra generica de "sem extensao": isso
+# evitaria esconder por acidente um arquivo-fonte legitimo sem extensao no
+# futuro (ex.: LICENSE, Dockerfile). Auditoria pos-missao encontrou este
+# arquivo untracked (nunca commitado) escapando da regra acima por nao ter
+# ".md" no nome.
+/principios da eletricidade240826
+
 # frontend React (Fase F, preview arquitetural) — build artifacts e deps
 /frontend/node_modules/
 /frontend/dist/
