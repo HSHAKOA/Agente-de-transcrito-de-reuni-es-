@@ -43,6 +43,20 @@ def _fake_healthy_devices(monkeypatch):
     monkeypatch.setattr(cli, "check_device_health", _fake_health)
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_transcription_by_default(monkeypatch):
+    """A transcricao ao vivo (Fase D) carrega um modelo Whisper de verdade
+    -- sem isto, cada teste bateria nisso, deixando de ser hermetico e
+    lento. Desligada por padrao aqui (`_make_args` ja usa
+    `live_transcription=False`); os testes dedicados de Fase D
+    reativam explicitamente com um `load_live_model` falso."""
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("load_live_model nao deveria ser chamado com live_transcription=False")
+
+    monkeypatch.setattr(cli, "load_live_model", _fail_if_called)
+
+
 def _make_args(tmp_path: Path, **overrides) -> argparse.Namespace:
     defaults = dict(
         output=tmp_path / "saida.md",
@@ -60,6 +74,9 @@ def _make_args(tmp_path: Path, **overrides) -> argparse.Namespace:
         system_device=None,
         microphone_device=None,
         levels_file=None,
+        live_transcription=False,
+        live_preset="FAST",
+        live_transcript_file=None,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -370,3 +387,86 @@ def test_graceful_stop_event_flushes_partial_buffer_through_full_pipeline(tmp_pa
     session = MeetingSession.load(meeting_dir)
     assert session.state["status"] == STATUS_COMPLETED
     assert session.state["chunks_recorded"] == 1
+
+
+# -- transcricao ao vivo (Fase D) -----------------------------------------
+
+def _fake_load_live_model(preset, device, language):
+    return object(), language, 0.05  # (model, language, load_seconds) -- model nunca e usado de verdade
+
+
+def test_live_transcription_commits_segments_from_durable_chunks(tmp_path, monkeypatch):
+    """O caminho DEFINITIVO da transcricao ao vivo nao depende de audio
+    cru nenhum -- toda vez que um chunk duravel termina de transcrever
+    (ja testado em outros casos deste arquivo), o resultado precisa
+    aparecer tambem no LiveTranscript como `committed`. Espiona a
+    instancia real (em vez de so checar o arquivo, que ja foi apagado
+    quando run() retorna) pra verificar o CONTEUDO de verdade."""
+    from meeting_transcriber.live.transcript import LiveTranscript as RealLiveTranscript
+
+    captured = []
+
+    def _spy_factory():
+        instance = RealLiveTranscript()
+        captured.append(instance)
+        return instance
+
+    monkeypatch.setattr(cli, "recording_worker", _fake_recording_worker_factory(2))
+    monkeypatch.setattr(cli, "Transcriber", _FakeTranscriber)
+    monkeypatch.setattr(cli, "load_live_model", _fake_load_live_model)
+    monkeypatch.setattr(cli, "make_transcribe_window_fn", lambda model, language: (lambda samples, sr: ""))
+    monkeypatch.setattr(cli, "LiveTranscript", _spy_factory)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a, **k: None)
+
+    meeting_dir = tmp_path / "data" / "meetings" / "reuniao-live-1"
+    live_transcript_file = tmp_path / "live_transcript.json"
+    args = _make_args(
+        tmp_path, meeting_dir=meeting_dir, live_transcription=True, live_transcript_file=live_transcript_file
+    )
+
+    exit_code = cli.run(args)
+
+    assert exit_code == 0
+    assert not live_transcript_file.exists()  # apagado ao final, mesmo padrao de levels_file
+
+    assert len(captured) == 1
+    snapshot = captured[0].snapshot()
+    committed = [s for s in snapshot["segments"] if s["state"] == "committed"]
+    assert [s["text"] for s in committed] == ["texto do bloco 0", "texto do bloco 1"]
+    assert {s["source"] for s in committed} == {"system"}  # so sistema habilitado nesta sessao
+    assert snapshot["backlog"]["status"] == "LIVE"
+
+
+def test_live_transcription_failure_to_load_model_does_not_break_recording(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "recording_worker", _fake_recording_worker_factory(1))
+    monkeypatch.setattr(cli, "Transcriber", _FakeTranscriber)
+
+    def _fail_to_load(preset, device, language):
+        raise RuntimeError("modelo ao vivo indisponivel (simulado)")
+
+    monkeypatch.setattr(cli, "load_live_model", _fail_to_load)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a, **k: None)
+
+    meeting_dir = tmp_path / "data" / "meetings" / "reuniao-live-3"
+    args = _make_args(tmp_path, meeting_dir=meeting_dir, live_transcription=True)
+
+    exit_code = cli.run(args)
+
+    assert exit_code == 0  # a gravacao/transcricao duravel nunca falha por causa disso
+    session = MeetingSession.load(meeting_dir)
+    assert session.state["status"] == STATUS_COMPLETED
+
+
+def test_live_transcription_disabled_flag_never_loads_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "recording_worker", _fake_recording_worker_factory(1))
+    monkeypatch.setattr(cli, "Transcriber", _FakeTranscriber)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a, **k: None)
+
+    meeting_dir = tmp_path / "data" / "meetings" / "reuniao-live-4"
+    args = _make_args(tmp_path, meeting_dir=meeting_dir, live_transcription=False)
+
+    # a fixture autouse _disable_live_transcription_by_default ja faz
+    # load_live_model levantar AssertionError se for chamado -- um run()
+    # que passa confirma que ele realmente nao foi chamado.
+    exit_code = cli.run(args)
+    assert exit_code == 0

@@ -226,6 +226,50 @@ def test_dual_capture_calls_on_level_for_each_source(tmp_path: Path):
     assert all(level > 0 for _, level in levels)  # blocos nao sao silencio
 
 
+def test_dual_capture_calls_on_raw_block_for_each_source(tmp_path: Path):
+    stop_event = threading.Event()
+    barrier = _make_barrier(stop_event)
+    system_block = _make_block(0.1)
+    mic_block = _make_block(0.1)
+    system_mic = _FakeMic([system_block, system_block], barrier)
+    mic_mic = _FakeMic([mic_block, mic_block], barrier)
+    out_queue: "queue.Queue" = queue.Queue()
+    raw_blocks = []
+    lock = threading.Lock()
+
+    def _on_raw_block(source, block):
+        with lock:
+            raw_blocks.append((source, block))
+
+    dual_recording_worker(
+        tmp_path, chunk_seconds=10, stop_event=stop_event, out_queue=out_queue,
+        system_mic_factory=lambda: system_mic, microphone_mic_factory=lambda: mic_mic,
+        samplerate=SAMPLE_RATE, on_raw_block=_on_raw_block,
+    )
+
+    sources_seen = {s for s, _ in raw_blocks}
+    assert sources_seen == {"system", "microphone"}
+    # o bloco cru repassado e o mesmo audio gravado, nao um nivel ja calculado
+    assert any(np.array_equal(b, system_block) for s, b in raw_blocks if s == "system")
+
+
+def test_dual_capture_on_raw_block_is_optional_and_never_required(tmp_path: Path):
+    """on_raw_block omitido nao pode quebrar nada -- e um parametro
+    aditivo (Fase D), o caminho antigo sem ele continua igual."""
+    stop_event = threading.Event()
+    barrier = _make_barrier(stop_event)
+    system_mic = _FakeMic([_make_block(0.1)], barrier)
+    mic_mic = _FakeMic([_make_block(0.1)], barrier)
+    out_queue: "queue.Queue" = queue.Queue()
+
+    dual_recording_worker(
+        tmp_path, chunk_seconds=10, stop_event=stop_event, out_queue=out_queue,
+        system_mic_factory=lambda: system_mic, microphone_mic_factory=lambda: mic_mic,
+        samplerate=SAMPLE_RATE,
+    )
+    assert not out_queue.empty()
+
+
 def test_dual_capture_no_threads_left_running_after_return(tmp_path: Path):
     stop_event = threading.Event()
     barrier = _make_barrier(stop_event)

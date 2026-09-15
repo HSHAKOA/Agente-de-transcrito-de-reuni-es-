@@ -5,13 +5,45 @@ Atualizado ao fim de cada fase concluída nesta sessão longa. Ver também
 
 ## HEAD atual
 
-`529fd9f` — `feat(scheduling): wire the scheduler engine into webui.py`
+Ver `git log -1` — última entrada: wiring da transcrição ao vivo (Fase D)
+em `webui.py`/`cli.py`.
 
 ## Fase atual
 
-D (transcrição quase em tempo real) — em andamento.
+E (SQLite + histórico) — a seguir.
 
 ## Última fase concluída
+
+**Fase D — Transcrição quase em tempo real**: núcleo completo e testado.
+
+- `src/meeting_transcriber/live/`: `window.py` (janelas de 8s com
+  sobreposição, timestamps por contagem de amostra), `dedup.py`
+  (deduplicação lexical determinística no ponto de sobreposição),
+  `segments.py`/`transcript.py` (provisional vs. committed, substituição
+  por intervalo de tempo, backlog LIVE/PROCESSING/BEHIND, latência média),
+  `pipeline.py` (fila com backpressure + retry, nunca bloqueia a
+  captura), `whisper_adapter.py` (liga ao Whisper real).
+- `whisper_config.py`: presets FAST/BALANCED/ACCURATE/MAXIMUM,
+  `resolve_device()` com fallback seguro pra CPU se CUDA não disponível.
+- `cli.py`: pipeline ao vivo roda em paralelo à transcrição durável
+  (inalterada); `commit_range` substitui previas pelo resultado real a
+  cada chunk fechado; flush final ao parar; nunca derruba a gravação se
+  o modelo ao vivo falhar ao carregar.
+- `audio/dual_capture.py`: `on_raw_block` novo (aditivo) para viabilizar
+  a previa ao vivo em modo dual (system+microfone) — sem "mixed" em
+  tempo real ainda (documentado como limitação, ver
+  `docs/LIVE_TRANSCRIPTION.md`).
+- `webui.py`: `GET /api/transcription/live` + `GET /api/transcription/stream`
+  (SSE), mesmo padrão dos endpoints de áudio.
+- **Sem UI em `index.html`** — mesma decisão da Fase C.1 (Fase F substitui
+  por React).
+- Testado com dublês (78+ testes novos) e com hardware real (smoke test
+  manual: pipeline completo funcionando de ponta a ponta com Whisper
+  "tiny" real; conteúdo de texto com fala real sobrepondo duas janelas
+  **não foi observado com hardware**, só coberto por testes com dublês —
+  ver `docs/LIVE_TRANSCRIPTION.md`, seção "Testado").
+
+## Fase anterior
 
 **Fase C.1 — Agendamento de gravações**: completa e testada.
 
@@ -75,8 +107,9 @@ Ver `docs/SCHEDULING.md`, seção final.
 
 ## Próxima tarefa
 
-Implementar Fase D (transcrição quase em tempo real): separar
-persistência de áudio (chunks duráveis, inalterados) de uma janela de
-transcrição de baixa latência (5-15s), com segmentos provisórios/
-definitivos, deduplicação determinística por sobreposição de texto, fila
-de transcrição com backlog observável, e API SSE para o frontend futuro.
+Fase E (SQLite + histórico): schema versionado, camada de repositório,
+migração idempotente das sessões existentes em filesystem (e dos
+schedules em JSON) para SQLite, busca (FTS5 se disponível), paginação,
+soft delete. Ver `docs/PENDENCIAS.md` para o estado real ao fim desta
+sessão (nem toda fase D-I recebeu o mesmo nível de profundidade — ver
+priorização documentada lá).

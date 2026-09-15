@@ -72,6 +72,7 @@ def dual_recording_worker(
     samplerate: int,
     on_chunk_recorded: Optional[Callable[[str, RecordedChunk], None]] = None,
     on_level: Optional[Callable[[str, float], None]] = None,
+    on_raw_block: Optional[Callable[[str, "object"], None]] = None,
 ) -> None:
     """Grava sistema + microfone simultaneamente e poe chunks MIXADOS em
     `out_queue` -- a mesma interface que `recording_worker` ja expoe pro
@@ -83,6 +84,14 @@ def dual_recording_worker(
     `out_queue` -- quem chama decide se quer rastrear os brutos e/ou so o
     mixado (ver `cli.py`, que usa isso pra manter `chunks_recorded` da
     sessao contando os blocos brutos das duas fontes).
+
+    `on_raw_block(source, block)` e chamado com o bloco de audio CRU
+    (~0.5s) de cada fonte assim que lido -- usado pela transcricao ao vivo
+    (Fase D), que precisa do audio antes dele virar nivel/chunk. Nao ha
+    hoje um fluxo "mixado" em tempo real (a mixagem so acontece por
+    CHUNK, ao fechar um bloco duravel) -- por isso a previa ao vivo em
+    modo dual mostra "system"/"microphone" como fontes SEPARADAS, nunca
+    uma "mixed" em tempo real (documentado em docs/LIVE_TRANSCRIPTION.md).
     """
     system_dir = session_dir / "system"
     microphone_dir = session_dir / "microphone"
@@ -102,10 +111,14 @@ def dual_recording_worker(
     def _on_system_block(block) -> None:
         if on_level is not None:
             on_level("system", normalize_level(compute_rms(block)))
+        if on_raw_block is not None:
+            on_raw_block("system", block)
 
     def _on_microphone_block(block) -> None:
         if on_level is not None:
             on_level("microphone", normalize_level(compute_rms(block)))
+        if on_raw_block is not None:
+            on_raw_block("microphone", block)
 
     system_thread = threading.Thread(
         target=recording_worker,

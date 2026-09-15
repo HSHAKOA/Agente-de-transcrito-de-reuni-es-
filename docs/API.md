@@ -255,6 +255,34 @@ puro da biblioteca padrão — sem dependência nova, sem handshake bidirecional
 que não seria usado. Polling HTTP no ritmo de `/api/status` (1.5s) é
 longe demais da frequência pedida pro medidor parecer responsivo.
 
+## Transcrição ao vivo (Fase D — ver `docs/LIVE_TRANSCRIPTION.md`)
+
+### `GET /api/transcription/live`
+
+Snapshot único da transcrição ao vivo da gravação ATIVA:
+
+```json
+{
+  "segments": [
+    {"start_seconds": 12.3, "end_seconds": 18.1, "text": "...", "state": "committed", "source": "system"},
+    {"start_seconds": 18.1, "end_seconds": 24.0, "text": "...", "state": "provisional", "source": "system"}
+  ],
+  "backlog": {"recorded_seconds": 60.2, "transcribed_seconds": 54.0, "pending_seconds": 6.2, "status": "PROCESSING"},
+  "avg_latency_seconds": 1.8,
+  "model_load_seconds": 0.6
+}
+```
+
+`{}` se não há gravação rodando, se a previa ao vivo estiver desativada
+(`--no-live-transcription`) ou se o arquivo ainda não existe/está no meio
+de uma escrita.
+
+### `GET /api/transcription/stream` (Server-Sent Events)
+
+Mesmo conteúdo de `GET /api/transcription/live`, enviado como eventos
+`data: {...}\n\n` sempre que o snapshot muda — mesmo padrão de
+`GET /api/audio/levels/stream` (SSE em vez de WebSocket/polling comum).
+
 ## Agendamento (Fase C.1 — ver `docs/SCHEDULING.md`)
 
 ### `GET /api/schedules`

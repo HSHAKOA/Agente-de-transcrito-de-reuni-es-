@@ -84,6 +84,11 @@ TERMINATE_TIMEOUT_SECONDS = 5.0
 # atualizacoes/s pedida (0.15s ~= 6.7 Hz).
 LEVELS_STREAM_INTERVAL_SECONDS = 0.15
 
+# transcricao ao vivo muda bem mais devagar que o nivel de audio (segmentos
+# chegam a cada poucos segundos, nunca varias vezes por segundo) -- um
+# intervalo mais folgado evita releitura de arquivo sem necessidade.
+TRANSCRIPTION_STREAM_INTERVAL_SECONDS = 0.5
+
 logger = logging.getLogger("meeting_transcriber.webui")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -482,6 +487,7 @@ def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[boo
         meeting_dir = target_root / meeting_id
         output_path = meeting_dir / "transcript.md"
         levels_path = meeting_dir / "levels.json"
+        live_transcript_path = meeting_dir / "live_transcript.json"
 
         cmd = [
             _python_executable(),
@@ -504,6 +510,8 @@ def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[boo
             str(meeting_dir),
             "--levels-file",
             str(levels_path),
+            "--live-transcript-file",
+            str(live_transcript_path),
         ]
         if not keep_audio:
             cmd.append("--no-keep-audio")
@@ -772,6 +780,25 @@ def get_audio_levels() -> dict:
         return {}
 
 
+def get_live_transcription() -> dict:
+    """GET /api/transcription/live -- ultimo snapshot da transcricao ao
+    vivo (segmentos provisorios/definitivos + backlog) da gravacao ATIVA,
+    escrito periodicamente pelo subprocesso em
+    `<meeting_dir>/live_transcript.json` (ver cli.py:_live_transcript_writer_loop,
+    Fase D). Devolve {} se nao ha gravacao rodando, se a transcricao ao
+    vivo estiver desativada nesta sessao, ou se o arquivo ainda nao
+    existe/esta no meio de uma escrita -- nunca uma excecao por isso."""
+    with state_lock:
+        meeting_dir = state["meeting_dir"]
+    if not meeting_dir:
+        return {}
+    live_path = Path(meeting_dir) / "live_transcript.json"
+    try:
+        return json.loads(live_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 # -- Agendamento de gravacoes (Fase C.1) ------------------------------------
 
 def _schedule_to_api_dict(schedule, now: datetime) -> dict:
@@ -883,6 +910,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_audio_levels())
             elif self.path == "/api/audio/levels/stream":
                 self._serve_levels_stream()
+            elif self.path == "/api/transcription/live":
+                self._send_json(get_live_transcription())
+            elif self.path == "/api/transcription/stream":
+                self._serve_transcription_stream()
             elif self.path == "/api/schedules":
                 self._send_json(get_schedules())
             else:
@@ -1027,6 +1058,30 @@ class Handler(BaseHTTPRequestHandler):
             last_payload = None
             while True:
                 payload = json.dumps(get_audio_levels())
+                if payload != last_payload:
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_payload = payload
+                time.sleep(interval)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass  # cliente fechou a conexao -- fim normal do stream, nao um erro
+
+    def _serve_transcription_stream(self, interval: float = TRANSCRIPTION_STREAM_INTERVAL_SECONDS) -> None:
+        """GET /api/transcription/stream -- Server-Sent Events com o
+        snapshot da transcricao ao vivo (Fase D), mesmo raciocinio de
+        `_serve_levels_stream` (SSE em vez de WebSocket/polling comum --
+        ver docs/API.md)."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            last_payload = None
+            while True:
+                payload = json.dumps(get_live_transcription())
                 if payload != last_payload:
                     self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()

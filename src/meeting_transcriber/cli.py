@@ -32,10 +32,15 @@ from .audio.levels import LevelMeter, compute_rms, normalize_level
 from .audio.loopback import make_loopback_mic_factory
 from .audio.microphone import make_microphone_factory
 from .audio_capture import SAMPLE_RATE
+from .live.pipeline import LiveTranscriptionPipeline
+from .live.segments import STATE_COMMITTED, LiveSegment
+from .live.transcript import LiveTranscript
+from .live.whisper_adapter import load_live_model, make_transcribe_window_fn
 from .markdown_writer import MarkdownWriter
 from .recorder import RecordedChunk, recording_worker
 from .session import STATUS_FAILED, MeetingSession
 from .transcriber import Transcriber
+from .whisper_config import DEFAULT_LIVE_PRESET
 
 logger = logging.getLogger("meeting_transcriber")
 
@@ -120,6 +125,36 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Arquivo onde escrever, periodicamente e de forma atomica, um snapshot JSON do nivel de "
         "audio de cada fonte (usado pelo medidor de audio do painel). Apagado ao final da sessao.",
     )
+    parser.add_argument(
+        "--live-transcription",
+        dest="live_transcription",
+        action="store_true",
+        default=True,
+        help="Ativa a previa de transcricao quase em tempo real, alem da transcricao duravel por "
+        "bloco (padrao: ligado).",
+    )
+    parser.add_argument(
+        "--no-live-transcription",
+        dest="live_transcription",
+        action="store_false",
+        help="Desativa a previa ao vivo (a transcricao duravel por bloco continua normalmente).",
+    )
+    parser.add_argument(
+        "--live-preset",
+        default=DEFAULT_LIVE_PRESET,
+        metavar="PRESET",
+        help="Preset do modelo Whisper usado SO pela previa ao vivo (FAST/BALANCED/ACCURATE/MAXIMUM, "
+        "ou um nome de modelo direto). Padrao: mais rapido que o modelo da transcricao duravel, ja "
+        "que precisa terminar bem antes da proxima janela chegar.",
+    )
+    parser.add_argument(
+        "--live-transcript-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Arquivo onde escrever, periodicamente e de forma atomica, um snapshot JSON da "
+        "transcricao ao vivo (segmentos provisorios/definitivos + backlog). Apagado ao final da sessao.",
+    )
     return parser.parse_args(argv)
 
 
@@ -186,6 +221,29 @@ def _levels_writer_loop(
             logger.exception("Falha ao escrever %s", levels_file)
     try:
         _write_levels_snapshot(level_meter, levels_file)  # ultima escrita, com o estado final
+    except OSError:
+        pass
+
+
+def _write_live_transcript_snapshot(live_transcript: LiveTranscript, live_transcript_file: Path) -> None:
+    """Mesmo padrao de `_write_levels_snapshot` -- escrita atomica, arquivo
+    lido com frequencia (SSE do painel), nunca pode aparecer pela metade."""
+    tmp_path = live_transcript_file.with_name(live_transcript_file.name + f".tmp-{os.getpid()}")
+    tmp_path.write_text(json.dumps(live_transcript.snapshot(), ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, live_transcript_file)
+
+
+def _live_transcript_writer_loop(
+    live_transcript: LiveTranscript, live_transcript_file: Path, stop_event: threading.Event, interval: float = 0.5
+) -> None:
+    live_transcript_file.parent.mkdir(parents=True, exist_ok=True)
+    while not stop_event.wait(interval):
+        try:
+            _write_live_transcript_snapshot(live_transcript, live_transcript_file)
+        except OSError:
+            logger.exception("Falha ao escrever %s", live_transcript_file)
+    try:
+        _write_live_transcript_snapshot(live_transcript, live_transcript_file)
     except OSError:
         pass
 
@@ -281,6 +339,11 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
     dual_mode = args.capture_system and args.capture_microphone
+    # rotulo de fonte usado pelos segmentos DEFINITIVOS da transcricao ao
+    # vivo -- "mixed" bate com o que dual_capture.mix_chunks ja produz de
+    # verdade pro chunk duravel; os PROVISORIOS em modo dual usam
+    # "system"/"microphone" separados (ver _on_raw_block_dual).
+    live_source_label = "mixed" if dual_mode else ("microphone" if args.capture_microphone else "system")
 
     language = None if args.language.lower() == "auto" else args.language
     keep_audio = not args.no_keep_audio
@@ -366,19 +429,56 @@ def run(args: argparse.Namespace) -> int:
 
     level_meter = LevelMeter()
 
+    # Transcricao ao vivo (Fase D): opcional e independente da transcricao
+    # duravel por chunk (inalterada, ver loop principal mais abaixo) -- se
+    # falhar ao carregar o modelo ao vivo, so desativa a previa, nunca a
+    # gravacao/transcricao de verdade.
+    live_transcript = LiveTranscript()
+    live_pipeline: Optional[LiveTranscriptionPipeline] = None
+    if args.live_transcription:
+        try:
+            live_model, live_language, load_seconds = load_live_model(args.live_preset, args.device, language)
+            live_transcript.set_model_load_seconds(load_seconds)
+            live_pipeline = LiveTranscriptionPipeline(
+                live_transcript, make_transcribe_window_fn(live_model, live_language), SAMPLE_RATE,
+            )
+            live_pipeline.start()
+        except Exception:
+            logger.exception(
+                "Falha ao iniciar a transcricao ao vivo -- desativada nesta sessao "
+                "(a gravacao e a transcricao duravel continuam normalmente)."
+            )
+            live_pipeline = None
+
     def _on_single_chunk_recorded(chunk: RecordedChunk) -> None:
         if session is not None:
             session.mark_chunk_recorded(chunk.index, chunk.path, chunk.start_offset_seconds, chunk.duration_seconds)
+        live_transcript.set_recorded_seconds(chunk.start_offset_seconds + chunk.duration_seconds)
 
     def _on_dual_chunk_recorded(source: str, chunk: RecordedChunk) -> None:
         # so o chunk MIXADO conta pro progresso da sessao -- e o que
         # efetivamente entra na fila de transcricao; os brutos
         # "system"/"microphone" sao so artefatos intermediarios em disco.
-        if session is not None and source == "mixed":
-            session.mark_chunk_recorded(chunk.index, chunk.path, chunk.start_offset_seconds, chunk.duration_seconds)
+        if source == "mixed":
+            if session is not None:
+                session.mark_chunk_recorded(chunk.index, chunk.path, chunk.start_offset_seconds, chunk.duration_seconds)
+            live_transcript.set_recorded_seconds(chunk.start_offset_seconds + chunk.duration_seconds)
 
     # a gravacao roda em thread separada da transcricao (ver recorder.py):
     # gravar nunca espera transcrever, e vice-versa.
+    def _on_raw_block_dual(source: str, block) -> None:
+        # sem stream "mixed" em tempo real (a mixagem so acontece por
+        # chunk duravel) -- a previa ao vivo em modo dual mostra
+        # "system"/"microphone" como fontes SEPARADAS (ver docstring de
+        # dual_recording_worker e docs/LIVE_TRANSCRIPTION.md).
+        if live_pipeline is not None:
+            live_pipeline.on_block(source, block)
+
+    def _on_block_single(source: str, block) -> None:
+        level_meter.update(source, normalize_level(compute_rms(block)))
+        if live_pipeline is not None:
+            live_pipeline.on_block(source, block)
+
     if dual_mode:
         recorder_thread = threading.Thread(
             target=dual_recording_worker,
@@ -389,6 +489,7 @@ def run(args: argparse.Namespace) -> int:
                 samplerate=SAMPLE_RATE,
                 on_chunk_recorded=_on_dual_chunk_recorded,
                 on_level=level_meter.update,
+                on_raw_block=_on_raw_block_dual,
             ),
             daemon=True,
         )
@@ -399,7 +500,7 @@ def run(args: argparse.Namespace) -> int:
             kwargs=dict(
                 mic_factory=make_microphone_factory(args.microphone_device),
                 on_chunk_recorded=_on_single_chunk_recorded,
-                on_block=lambda block: level_meter.update("microphone", normalize_level(compute_rms(block))),
+                on_block=lambda block: _on_block_single("microphone", block),
             ),
             daemon=True,
         )
@@ -411,7 +512,7 @@ def run(args: argparse.Namespace) -> int:
         # nao identica -- zero risco de mudar o comportamento ja testado.
         recorder_kwargs = dict(
             on_chunk_recorded=_on_single_chunk_recorded,
-            on_block=lambda block: level_meter.update("system", normalize_level(compute_rms(block))),
+            on_block=lambda block: _on_block_single("system", block),
         )
         if args.system_device is not None:
             recorder_kwargs["mic_factory"] = make_loopback_mic_factory(args.system_device)
@@ -446,6 +547,16 @@ def run(args: argparse.Namespace) -> int:
             daemon=True,
         )
         levels_writer_thread.start()
+
+    live_transcript_writer_stop = threading.Event()
+    live_transcript_writer_thread: Optional[threading.Thread] = None
+    if args.live_transcript_file is not None:
+        live_transcript_writer_thread = threading.Thread(
+            target=_live_transcript_writer_loop,
+            args=(live_transcript, args.live_transcript_file, live_transcript_writer_stop),
+            daemon=True,
+        )
+        live_transcript_writer_thread.start()
 
     logger.info(
         "Gravando (sistema=%s, microfone=%s). Pressione Ctrl+C para parar e finalizar a transcricao.",
@@ -485,6 +596,17 @@ def run(args: argparse.Namespace) -> int:
             try:
                 segments = transcriber.transcribe_file(chunk.path, offset_seconds=chunk.start_offset_seconds)
                 writer.append_segments(segments)  # escreve no .md JA, nao espera a sessao acabar
+                # a transcricao DURAVEL deste chunk e a fonte de verdade --
+                # substitui qualquer previa provisoria dessa faixa de tempo
+                # (Fase D: "committed" sempre vence "provisional").
+                live_transcript.commit_range(
+                    chunk.start_offset_seconds,
+                    chunk.start_offset_seconds + chunk.duration_seconds,
+                    [
+                        LiveSegment(s.start, s.end, s.text, STATE_COMMITTED, live_source_label)
+                        for s in segments
+                    ],
+                )
             except Exception as exc:  # um bloco com falha nao pode derrubar a sessao inteira
                 logger.exception("Falha ao transcrever o bloco %d", chunk.index)
                 writer.append_error_note(chunk.start_offset_seconds, chunk.path, exc)
@@ -511,6 +633,17 @@ def run(args: argparse.Namespace) -> int:
         # seguir pra limpeza/rmtree enquanto as threads de captura ainda
         # estao terminando.
         recorder_thread.join(timeout=25 if dual_mode else 5)
+        if live_pipeline is not None:
+            # emite a ultima janela parcial de cada fonte antes de parar --
+            # nunca perde os ultimos segundos so por nao terem fechado uma
+            # janela inteira (Fase D: "shutdown com transcricao pendente").
+            for source in (["system", "microphone"] if dual_mode else [live_source_label]):
+                live_pipeline.flush(source)
+            live_pipeline.stop(timeout=10.0)
+        if live_transcript_writer_thread is not None:
+            live_transcript_writer_stop.set()
+            live_transcript_writer_thread.join(timeout=2)
+            args.live_transcript_file.unlink(missing_ok=True)
         if levels_writer_thread is not None:
             levels_writer_stop.set()
             levels_writer_thread.join(timeout=2)

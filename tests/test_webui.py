@@ -703,6 +703,48 @@ def test_get_audio_levels_reads_current_meeting_levels_file(_isolated_webui, tmp
     assert webui.get_audio_levels() == {"system": {"level": 0.5}}
 
 
+# -- transcricao ao vivo (Fase D) ---------------------------------------
+
+def test_get_live_transcription_empty_when_not_recording(_isolated_webui):
+    assert webui.get_live_transcription() == {}
+
+
+def test_get_live_transcription_reads_current_meeting_file(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    payload = '{"segments": [{"text": "ola"}], "backlog": {"status": "LIVE"}}'
+    (meeting_dir / "live_transcript.json").write_text(payload, encoding="utf-8")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+    result = webui.get_live_transcription()
+    assert result["segments"] == [{"text": "ola"}]
+    assert result["backlog"]["status"] == "LIVE"
+
+
+def test_get_live_transcription_empty_when_file_missing_even_if_recording(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()  # sem live_transcript.json (ex.: --no-live-transcription)
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+    assert webui.get_live_transcription() == {}
+
+
+def test_get_live_transcription_tolerates_malformed_json(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "meeting"
+    meeting_dir.mkdir()
+    (meeting_dir / "live_transcript.json").write_text("{ nao e json valido", encoding="utf-8")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(meeting_dir)
+    assert webui.get_live_transcription() == {}
+
+
+def test_start_transcriber_passes_live_transcript_file_to_subprocess(_isolated_webui):
+    ok, msg = webui.start_transcriber({})
+    assert ok is True
+    cmd = _isolated_webui[0].args
+    assert "--live-transcript-file" in cmd
+
+
 def test_get_audio_levels_tolerates_missing_or_malformed_file(_isolated_webui, tmp_path):
     meeting_dir = tmp_path / "meeting"
     meeting_dir.mkdir()
