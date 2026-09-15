@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from meeting_transcriber import cli
+from meeting_transcriber.audio.models import AudioHealthResult
 from meeting_transcriber.recorder import RecordedChunk
 from meeting_transcriber.session import (
     STATUS_COMPLETED,
@@ -24,6 +25,22 @@ from meeting_transcriber.session import (
     MeetingSession,
 )
 from meeting_transcriber.transcriber import Segment
+
+
+@pytest.fixture(autouse=True)
+def _fake_healthy_devices(monkeypatch):
+    """run() agora testa o(s) dispositivo(s) de audio antes de gravar
+    (health check) -- sem isto, cada teste bateria no backend de audio
+    REAL desta maquina, deixando de ser hermetico. Devolve "saudavel" por
+    padrao; testes especificos de falha de dispositivo sobrescrevem isto."""
+
+    def _fake_health(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        return AudioHealthResult(
+            ok=True, code=None, message="OK", device_id=device_id or f"default-{kind}",
+            device_name=f"Dispositivo {kind} de teste", level=0.1,
+        )
+
+    monkeypatch.setattr(cli, "check_device_health", _fake_health)
 
 
 def _make_args(tmp_path: Path, **overrides) -> argparse.Namespace:
@@ -38,6 +55,11 @@ def _make_args(tmp_path: Path, **overrides) -> argparse.Namespace:
         work_dir=None,
         meeting_dir=None,
         resume=None,
+        capture_system=True,
+        capture_microphone=False,
+        system_device=None,
+        microphone_device=None,
+        levels_file=None,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
