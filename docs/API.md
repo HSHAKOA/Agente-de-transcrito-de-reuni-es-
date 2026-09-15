@@ -356,6 +356,48 @@ Sem corpo. Descarta uma ocorrência `missed`/`failed` sem iniciar
 gravação — libera a próxima ocorrência (agendamentos recorrentes) ou
 encerra o agendamento (`once`).
 
+## Histórico e busca (Fase E — ver `docs/DATABASE.md`)
+
+### `GET /api/meetings`
+
+Query string: `limit` (padrão 20, máximo 100), `offset` (padrão 0),
+`status` (filtro exato), `q` (busca por texto — título ou conteúdo da
+transcrição; quando presente, `limit`/`offset` de paginação não se
+aplicam, só `limit`).
+
+```json
+{"meetings": [{"id": "...", "title": "...", "status": "completed", "...": "..."}], "total": 42, "limit": 20, "offset": 0}
+```
+
+Lê só o índice SQLite (nunca varre o filesystem na hora) — ver
+`POST /api/meetings/import` para atualizá-lo.
+
+### `GET /api/meetings/<id>`
+
+```json
+{"ok": true, "meeting": {"...": "..."}, "segments": [{"sequence": 0, "start_seconds": 0.0, "text": "...", "speaker_label": "Você"}]}
+```
+
+`404` com `{"ok": false, "message": "..."}` se a reunião nunca foi
+importada (ou o id é inválido).
+
+### `POST /api/meetings/import`
+
+Sem corpo. Varre todas as raízes conhecidas (mesmas de
+`GET /api/recovery`) e (re)importa cada reunião encontrada — idempotente,
+pode ser chamado quantas vezes o usuário quiser. Resposta:
+
+```json
+{"ok": true, "imported": 12, "failed": [{"meeting_id": "...", "message": "..."}], "total_scanned": 13}
+```
+
+### `POST /api/meetings/<id>/delete`
+
+Sem corpo. **Soft delete**: marca a reunião como excluída no índice —
+nunca apaga nenhum arquivo real (`transcript.md`, áudio, etc.).
+`{"ok": true, "message": "..."}` (`200`) ou `{"ok": false, "message": "..."}`
+(`404`) se não encontrada.
+
 ## Códigos de erro (`AudioErrorCode`)
 
 Usados no formato `{"error": {"code": "...", "message": "..."}}` (hoje

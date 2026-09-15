@@ -149,6 +149,14 @@ def _isolated_webui(tmp_path, monkeypatch):
         ),
     )
 
+    # Fase E: meeting_repository e outro singleton de importacao, preso
+    # ao meetings.db REAL do projeto -- mesmo raciocinio de isolamento.
+    from meeting_transcriber.storage.db import connect as _connect_db
+    from meeting_transcriber.storage.repository import MeetingRepository as _MeetingRepository
+
+    monkeypatch.setattr(webui, "MEETINGS_DB_PATH", tmp_path / "data" / "meetings.db")
+    monkeypatch.setattr(webui, "meeting_repository", _MeetingRepository(_connect_db(webui.MEETINGS_DB_PATH)))
+
     with webui.state_lock:
         webui.state.update(
             proc=None,
@@ -1169,3 +1177,126 @@ def test_schedule_engine_tick_starts_automatically(_isolated_webui, tmp_path, mo
     assert status["running"] is True
     loaded = webui.schedule_service.get(schedule.id)
     assert loaded.current_run.status == "recording"
+
+
+# -- historico e busca (Fase E) -------------------------------------------
+
+def _seed_meeting(webui_module, meeting_id="m1", **overrides):
+    data = dict(
+        id=meeting_id, title="Reuniao de teste", status="completed",
+        started_at="2026-09-15T19:00:00+00:00", finished_at="2026-09-15T20:00:00+00:00",
+        duration_seconds=3600.0, root_directory="D:\\Reunioes",
+        meeting_directory=f"D:\\Reunioes\\{meeting_id}", language="pt", model="small",
+        system_audio_enabled=True, system_device_id=None, system_device_name=None,
+        microphone_enabled=False, microphone_device_id=None, microphone_device_name=None,
+    )
+    data.update(overrides)
+    webui_module.meeting_repository.upsert_meeting(data)
+
+
+def test_get_meetings_empty_when_nothing_imported(_isolated_webui):
+    result = webui.get_meetings({})
+    assert result["meetings"] == []
+    assert result["total"] == 0
+
+
+def test_get_meetings_lists_seeded_meetings(_isolated_webui):
+    _seed_meeting(webui, "m1")
+    _seed_meeting(webui, "m2", started_at="2026-09-16T19:00:00+00:00")
+    result = webui.get_meetings({})
+    assert result["total"] == 2
+    assert [m["id"] for m in result["meetings"]] == ["m2", "m1"]  # mais recente primeiro
+
+
+def test_get_meetings_respects_limit_and_offset(_isolated_webui):
+    for i in range(5):
+        _seed_meeting(webui, f"m{i}", started_at=f"2026-09-{i+1:02d}T00:00:00+00:00")
+    page = webui.get_meetings({"limit": ["2"], "offset": ["2"]})
+    assert len(page["meetings"]) == 2
+    assert page["total"] == 5
+
+
+def test_get_meetings_filters_by_status(_isolated_webui):
+    _seed_meeting(webui, "m1", status="completed")
+    _seed_meeting(webui, "m2", status="failed")
+    result = webui.get_meetings({"status": ["failed"]})
+    assert [m["id"] for m in result["meetings"]] == ["m2"]
+
+
+def test_get_meetings_search_by_query(_isolated_webui):
+    _seed_meeting(webui, "m1", title="Projeto ERP")
+    _seed_meeting(webui, "m2", title="Aula de Calculo")
+    result = webui.get_meetings({"q": ["ERP"]})
+    assert [m["id"] for m in result["meetings"]] == ["m1"]
+
+
+def test_get_meetings_clamps_limit_to_max(_isolated_webui):
+    result = webui.get_meetings({"limit": ["99999"]})
+    assert result["limit"] == webui.MEETINGS_PAGE_SIZE_MAX
+
+
+def test_get_meetings_tolerates_invalid_query_params(_isolated_webui):
+    result = webui.get_meetings({"limit": ["not-a-number"], "offset": ["also-not-a-number"]})
+    assert result["limit"] == webui.MEETINGS_PAGE_SIZE_DEFAULT
+    assert result["offset"] == 0
+
+
+def test_get_meeting_detail_not_found(_isolated_webui):
+    ok, payload = webui.get_meeting_detail("nao-existe")
+    assert ok is False
+    assert payload["ok"] is False
+
+
+def test_get_meeting_detail_rejects_invalid_id(_isolated_webui):
+    ok, payload = webui.get_meeting_detail("../../etc/passwd")
+    assert ok is False
+
+
+def test_get_meeting_detail_returns_meeting_and_segments(_isolated_webui):
+    _seed_meeting(webui, "m1")
+    webui.meeting_repository.replace_segments("m1", [{"start_seconds": 0, "end_seconds": 5, "text": "ola"}])
+    ok, payload = webui.get_meeting_detail("m1")
+    assert ok is True
+    assert payload["meeting"]["id"] == "m1"
+    assert payload["segments"][0]["text"] == "ola"
+
+
+def test_import_meetings_now_scans_known_roots(_isolated_webui, tmp_path):
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="Reuniao Real", model="small", language="pt", device="cpu",
+        transcript_path=tmp_path / "t.md", meeting_id="reuniao-real",
+    )
+    (tmp_path / "t.md").write_text("# T\n\n## Transcricao\n\n**[00:00:00]** Ola.\n\n", encoding="utf-8")
+    session.mark_completed()
+
+    result = webui.import_meetings_now()
+    assert result["ok"] is True
+    assert result["imported"] == 1
+    assert webui.meeting_repository.get_meeting("reuniao-real") is not None
+
+
+def test_delete_meeting_soft_deletes(_isolated_webui):
+    _seed_meeting(webui, "m1")
+    ok, payload = webui.delete_meeting("m1")
+    assert ok is True
+    assert webui.get_meetings({})["meetings"] == []  # some do resultado padrao (nao inclui excluidas)
+
+
+def test_delete_meeting_not_found(_isolated_webui):
+    ok, payload = webui.delete_meeting("nao-existe")
+    assert ok is False
+
+
+def test_delete_meeting_never_touches_real_files(_isolated_webui, tmp_path):
+    meeting_dir = tmp_path / "reuniao-real"
+    meeting_dir.mkdir()
+    marker = meeting_dir / "transcript.md"
+    marker.write_text("conteudo real", encoding="utf-8")
+    _seed_meeting(webui, "m1", meeting_directory=str(meeting_dir))
+
+    webui.delete_meeting("m1")
+
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8") == "conteudo real"

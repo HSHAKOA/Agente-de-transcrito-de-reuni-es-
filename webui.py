@@ -31,6 +31,7 @@ import time
 import webbrowser
 from collections import deque
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,7 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 SETTINGS_PATH = ROOT / "data" / "settings.json"
 SCHEDULES_PATH = ROOT / "data" / "schedules.json"
+MEETINGS_DB_PATH = ROOT / "data" / "meetings.db"
 
 # webui.py em si (nao so o subprocesso que ele lanca) agora usa
 # meeting_transcriber.validation/session/settings/folder_dialog, entao
@@ -54,6 +56,9 @@ from meeting_transcriber.scheduling.clock import SystemClock  # noqa: E402
 from meeting_transcriber.scheduling.engine import SchedulerEngine  # noqa: E402
 from meeting_transcriber.scheduling.service import ScheduleService, ValidationError as ScheduleValidationError  # noqa: E402
 from meeting_transcriber.scheduling.store import ScheduleStore  # noqa: E402
+from meeting_transcriber.storage.db import connect as connect_db  # noqa: E402
+from meeting_transcriber.storage.import_filesystem import import_all  # noqa: E402
+from meeting_transcriber.storage.repository import MeetingRepository  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
     MeetingSession,
@@ -248,6 +253,13 @@ schedule_engine = SchedulerEngine(
     request_stop=_scheduler_request_stop,
     sample_rate=SAMPLE_RATE,
 )
+
+# Historico e busca (Fase E): indice SQLite construido a partir das
+# pastas de reuniao existentes -- aditivo, nunca no caminho quente de
+# gravacao (ver storage/__init__.py). Importar e uma acao EXPLICITA
+# (POST /api/meetings/import), nunca automatica no boot -- evita
+# trabalho de fundo surpresa toda vez que o painel abre.
+meeting_repository = MeetingRepository(connect_db(MEETINGS_DB_PATH))
 
 
 def _log(line: str) -> None:
@@ -855,7 +867,86 @@ def ignore_missed_schedule(schedule_id: str) -> "tuple[bool, dict]":
     return ok, {"ok": ok, "message": message}
 
 
+# -- historico e busca (Fase E) ----------------------------------------
+
+MEETINGS_PAGE_SIZE_DEFAULT = 20
+MEETINGS_PAGE_SIZE_MAX = 100
+
+
+def get_meetings(query_params: dict) -> dict:
+    """GET /api/meetings -- lista paginada, com filtro opcional por
+    status e busca de texto (`q`). Nunca varre o filesystem na hora: le
+    so o indice SQLite (ver `POST /api/meetings/import` pra atualiza-lo)."""
+    try:
+        limit = min(MEETINGS_PAGE_SIZE_MAX, max(1, int(query_params.get("limit", [MEETINGS_PAGE_SIZE_DEFAULT])[0])))
+    except (ValueError, IndexError):
+        limit = MEETINGS_PAGE_SIZE_DEFAULT
+    try:
+        offset = max(0, int(query_params.get("offset", ["0"])[0]))
+    except (ValueError, IndexError):
+        offset = 0
+    status = (query_params.get("status", [None])[0]) or None
+    search = (query_params.get("q", [None])[0]) or None
+
+    if search:
+        meetings = meeting_repository.search_meetings(search, limit=limit)
+        total = len(meetings)
+    else:
+        meetings = meeting_repository.list_meetings(limit=limit, offset=offset, status=status)
+        total = meeting_repository.count_meetings(status=status)
+    return {"meetings": meetings, "total": total, "limit": limit, "offset": offset}
+
+
+def get_meeting_detail(meeting_id: str) -> "tuple[bool, dict]":
+    """GET /api/meetings/<id> -- metadados + segmentos de transcricao do
+    indice SQLite. 404 (aqui representado como ok=False) se nunca foi
+    importada."""
+    try:
+        meeting_id = validation.validate_meeting_id(meeting_id)
+    except validation.ValidationError as exc:
+        return False, {"ok": False, "message": str(exc)}
+    meeting = meeting_repository.get_meeting(meeting_id)
+    if meeting is None:
+        return False, {"ok": False, "message": "Reuniao nao encontrada no indice. Rode a importacao primeiro."}
+    segments = meeting_repository.list_segments(meeting_id)
+    return True, {"ok": True, "meeting": meeting, "segments": segments}
+
+
+def import_meetings_now() -> dict:
+    """POST /api/meetings/import -- varre todas as raizes conhecidas
+    (mesmo `settings.get_known_meeting_roots` usado por recovery, ver
+    docs/RECOVERY.md) e (re)importa cada reuniao encontrada pro indice
+    SQLite. Idempotente: pode ser chamado quantas vezes o usuario quiser."""
+    roots = settings.get_known_meeting_roots(SETTINGS_PATH)
+    results = import_all(meeting_repository, roots)
+    ok_count = sum(1 for r in results if r.ok)
+    failed = [{"meeting_id": r.meeting_id, "message": r.message} for r in results if not r.ok]
+    return {
+        "ok": True,
+        "imported": ok_count,
+        "failed": failed,
+        "total_scanned": len(results),
+    }
+
+
+def delete_meeting(meeting_id: str) -> "tuple[bool, dict]":
+    """POST /api/meetings/<id>/delete -- soft delete APENAS no indice
+    (marca `deleted_at`); nunca apaga nenhum arquivo real da reuniao
+    (missao, secao E.12: exclusao explicita, nunca destrutiva sem
+    confirmacao alem desta propria chamada)."""
+    try:
+        meeting_id = validation.validate_meeting_id(meeting_id)
+    except validation.ValidationError as exc:
+        return False, {"ok": False, "message": str(exc)}
+    removed = meeting_repository.soft_delete_meeting(meeting_id)
+    if not removed:
+        return False, {"ok": False, "message": "Reuniao nao encontrada (ou ja excluida) no indice."}
+    return True, {"ok": True, "message": "Reuniao removida do historico (arquivos originais preservados)."}
+
+
 _RESUME_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/resume$")
+_MEETING_DELETE_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/delete$")
+_MEETING_ITEM_PATH_RE = re.compile(r"^/api/meetings/([^/]+)$")
 _SCHEDULE_ITEM_PATH_RE = re.compile(r"^/api/schedules/([^/]+)$")
 _SCHEDULE_ACTION_PATH_RE = re.compile(r"^/api/schedules/([^/]+)/(cancel|start-now|ignore-missed)$")
 
@@ -893,29 +984,38 @@ class Handler(BaseHTTPRequestHandler):
         if not self._valid_host():
             self.send_error(400, "Host invalido")
             return
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        query_params = parse_qs(parsed.query)
         try:
-            if self.path == "/" or self.path == "/index.html":
+            if path == "/" or path == "/index.html":
                 self._serve_file(ROOT / "index.html", "text/html; charset=utf-8")  # sempre le do disco, sem cache
-            elif self.path == "/api/status":
+            elif path == "/api/status":
                 self._send_json(get_status())  # consultado pela pagina a cada 1.5s
-            elif self.path == "/api/recovery":
+            elif path == "/api/recovery":
                 self._send_json(get_recovery())
-            elif self.path == "/api/settings":
+            elif path == "/api/settings":
                 self._send_json(get_settings_info())
-            elif self.path == "/api/audio/devices":
+            elif path == "/api/audio/devices":
                 self._send_json(get_audio_devices())
-            elif self.path == "/api/audio/config":
+            elif path == "/api/audio/config":
                 self._send_json(get_audio_config())
-            elif self.path == "/api/audio/levels":
+            elif path == "/api/audio/levels":
                 self._send_json(get_audio_levels())
-            elif self.path == "/api/audio/levels/stream":
+            elif path == "/api/audio/levels/stream":
                 self._serve_levels_stream()
-            elif self.path == "/api/transcription/live":
+            elif path == "/api/transcription/live":
                 self._send_json(get_live_transcription())
-            elif self.path == "/api/transcription/stream":
+            elif path == "/api/transcription/stream":
                 self._serve_transcription_stream()
-            elif self.path == "/api/schedules":
+            elif path == "/api/schedules":
                 self._send_json(get_schedules())
+            elif path == "/api/meetings":
+                self._send_json(get_meetings(query_params))
+            elif _MEETING_ITEM_PATH_RE.match(path):
+                match = _MEETING_ITEM_PATH_RE.match(path)
+                ok, payload = get_meeting_detail(match.group(1))
+                self._send_json(payload, 200 if ok else 404)
             else:
                 self.send_error(404)
         except Exception:
@@ -1015,6 +1115,14 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 ok, payload = update_schedule(match.group(1), body)
                 self._send_json(payload, 200 if ok else 409)
+                return
+            if self.path == "/api/meetings/import":
+                self._send_json(import_meetings_now())
+                return
+            match = _MEETING_DELETE_PATH_RE.match(self.path)
+            if match:
+                ok, payload = delete_meeting(match.group(1))
+                self._send_json(payload, 200 if ok else 404)
                 return
             self.send_error(404)
         except Exception:
