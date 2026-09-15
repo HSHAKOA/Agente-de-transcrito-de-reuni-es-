@@ -21,21 +21,26 @@ ponta e está testado.
 
 ## P1 — reduzem a experiência ou a superfície de produto
 
-1. **Telas de produto React (Fase F)** — maioria do ciclo principal feita.
-   - Feito: **Dashboard**, **Detalhe da reunião** (export em 5 formatos,
-     abas Resumo/Tarefas/Decisões honestamente marcadas "não
-     processado"), **Gravação** (níveis + transcrição ao vivo via SSE,
-     parar), **Agendamentos** (listar, iniciar agora, cancelar, ignorar
-     perdida), **Nova Reunião** (formulário completo, testar áudio,
-     iniciar — a primeira tela que de fato inicia uma gravação real).
-     O ciclo criar → gravar → ver já é 100% navegável em React. Todas
-     verificadas contra o `webui.py` real (proxy do Vite).
-   - Falta: **criar/editar agendamento** (precisa de um formulário de
-     data/hora/recorrência — o backend já suporta tudo,
-     `POST /api/schedules`/`POST /api/schedules/<id>`); **Configurações**
-     (hoje só a pasta é ajustável, dentro de Nova Reunião). `index.html`
-     continua sendo a referência até esses dois ficarem prontos e a
-     paridade funcional completa ser demonstrada.
+1. **Telas de produto React (Fase F)** — todas as 7 telas nomeadas na
+   missão (F.3) existem e funcionam contra o backend real: Dashboard,
+   Nova Reunião (formulário completo + testar áudio + iniciar de
+   verdade), Gravação (níveis + transcrição ao vivo via SSE + parar),
+   Detalhe da Reunião (export em 5 formatos, abas Resumo/Tarefas/
+   Decisões marcadas "não processado"), Agendamentos + criar/editar
+   (recorrência completa), Configurações. O ciclo inteiro criar → gravar
+   → ver → exportar → agendar é navegável em React.
+   - **Ainda falta pra "paridade funcional completa" de verdade**: uma
+     tela de Histórico dedicada com paginação (hoje só a busca +
+     últimas 5 reuniões do Dashboard); testes automatizados de frontend
+     (nenhum framework de teste — vitest/testing-library — foi
+     instalado ainda, ver F.17); exercitar de ponta a ponta os
+     caminhos de ESCRITA (criar reunião, criar agendamento) com uma
+     gravação real — verificado só via tipos (`tsc`) e a suíte de
+     backend já existente, nunca clicando de verdade nesses botões
+     contra dados reais, pra não criar artefatos persistentes
+     (agendamentos, gravações) sem o usuário pedir.
+   - `index.html`/`webui.py` continuam sendo a interface de referência
+     até esses pontos serem fechados.
 
 2. **Migração de `schedules.json` para SQLite**
    - Impacto: nenhum na prática (o scheduler funciona corretamente em

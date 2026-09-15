@@ -31,13 +31,17 @@ Branch: `main`.
 ## O que está parcialmente pronto
 
 - **Frontend React** (`frontend/`): toolchain funcionando, cliente HTTP
-  tipado cobrindo 100% do contrato atual. **Cinco telas reais
-  construídas** — Dashboard, Detalhe da Reunião, Gravação (SSE),
-  Agendamentos (listar + ações), Nova Reunião (formulário completo,
-  já inicia gravações de verdade). O ciclo criar → gravar → ver é
-  navegável inteiramente em React. Faltam: criar/editar agendamento
-  (formulário de recorrência) e Configurações. `index.html` continua
-  sendo a interface de referência até a paridade completa.
+  tipado cobrindo 100% do contrato atual. **Todas as 7 telas da F.3
+  construídas** — Dashboard, Nova Reunião, Gravação (SSE), Detalhe da
+  Reunião, Agendamentos + criar/editar (recorrência completa),
+  Configurações. O ciclo criar → gravar → ver → exportar → agendar é
+  navegável inteiramente em React. Falta: tela de Histórico dedicada com
+  paginação (hoje só busca + 5 recentes no Dashboard), testes
+  automatizados de frontend (nenhum framework instalado ainda), e
+  exercitar os caminhos de escrita com dados reais (não feito de
+  propósito, pra não criar agendamentos/gravações reais sem pedido).
+  `index.html` continua sendo a interface de referência até a paridade
+  completa.
 - **SQLite** (Fase E): `meetings`/`meeting_segments` prontos e testados;
   faltam `audio_chunks`/`transcription_jobs` como tabelas próprias e a
   migração de `schedules.json`.
@@ -86,14 +90,17 @@ Ver `docs/DATABASE.md` para o schema completo e o que falta.
 
 ## React
 
-`frontend/`. Dashboard, Detalhe da Reunião, Gravação, Agendamentos (só
-leitura + ações simples) e Nova Reunião já existem e funcionam contra o
-backend real. Próximo passo CONCRETO: um formulário de
-criar/editar agendamento (data, hora início/fim, timezone, recorrência,
-pasta, dispositivos — o backend já aceita tudo via
-`api.createSchedule()`/`api.updateSchedule()`, já tipados em
-`services/api.ts`) e uma tela de Configurações simples. Ver
-`docs/PENDENCIAS.md` item P1#1.
+`frontend/`. Todas as 7 telas da missão (F.3) existem: Dashboard, Nova
+Reunião, Gravação, Detalhe da Reunião, Agendamentos + criar/editar,
+Configurações. Próximos passos CONCRETOS, em ordem de valor: (1) instalar
+um framework de teste (`vitest` + `@testing-library/react` são a escolha
+óbvia pro stack Vite+React já existente) e cobrir os fluxos críticos
+listados em F.17; (2) uma tela de Histórico dedicada com paginação de
+verdade (`api.getMeetings({limit, offset})` já suporta, só falta a UI);
+(3) exercitar de ponta a ponta os formulários de escrita (Nova Reunião,
+Schedule Form) contra o backend real, com cuidado pra não deixar
+artefatos (uma gravação de teste real, um agendamento de teste real)
+sem limpar depois. Ver `docs/PENDENCIAS.md` item P1#1.
 
 ## Transcrição
 
@@ -162,18 +169,19 @@ Ver `docs/PENDENCIAS.md` para a lista completa (inclui P3).
 1. Rodar `pytest -q` (backend) e `cd frontend && npm run build && npx oxlint`
    (frontend) pra confirmar que nada regrediu desde o fim desta sessão.
 2. Ler `docs/PENDENCIAS.md` P1#1.
-3. Construir `frontend/src/pages/ScheduleForm.tsx` (criar E editar,
-   mesmo formulário) consumindo `api.createSchedule()`/
-   `api.updateSchedule()` (já tipados) — campos: título, data, hora
-   início/fim, timezone (default: detectar do navegador via
-   `Intl.DateTimeFormat().resolvedOptions().timeZone`), recorrência
-   (once/daily/weekdays/weekly/custom_days), pasta, fontes de áudio
-   (reaproveitar os selects já feitos em `pages/NewMeeting.tsx`).
-   Reaproveitar a lógica de conflito: o backend já recusa com uma
-   mensagem clara (`ValidationError`), só precisa ser exibida.
-4. Depois: uma tela de Configurações simples (hoje só a pasta é
-   ajustável, dentro de Nova Reunião).
-5. Não remover `index.html`/`webui.py` até a paridade funcional da nova
+3. `npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom`
+   no `frontend/`, configurar `vite.config.ts` (`test: { environment: "jsdom" }`),
+   e escrever o primeiro teste real (ex.: `Dashboard` renderiza o estado
+   "sem conexão" quando `api.getStatus()` rejeita) — hoje a única
+   verificação do frontend é `tsc`, que não pega bugs de lógica/render.
+4. Depois: tela de Histórico dedicada com paginação
+   (`frontend/src/pages/History.tsx`, usando `api.getMeetings({limit, offset})`).
+5. Com cuidado: testar manualmente os formulários de escrita (Nova
+   Reunião, Schedule Form) contra um backend real, criando UMA reunião/
+   agendamento de teste claramente identificado (ex.: título "DEMO —
+   teste manual") e limpando depois (soft-delete a reunião,
+   cancelar o agendamento).
+6. Não remover `index.html`/`webui.py` até a paridade funcional da nova
    interface ser demonstrada (ver `docs/ROADMAP.md`, Fase F).
 
 ## Comandos úteis

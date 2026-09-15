@@ -212,7 +212,7 @@ docs/                    # arquitetura, API, fases, segurança, pendências
 | C.1 — Agendamento de gravações | Concluída (sem UI; sem iniciar com o app fechado) |
 | D — Transcrição quase em tempo real | Núcleo concluído |
 | E — SQLite + histórico | Escopo reduzido, funcional |
-| F — Frontend React | Toolchain + cliente tipado prontos; sem telas de produto |
+| F — Frontend React | 7 telas reais (Dashboard, Nova Reunião, Gravação, Detalhe, Agendamentos, Configurações) — falta Histórico paginado e testes |
 | G — Inteligência (resumo/tarefas/decisões) | Não iniciada |
 | H — Diarização | Versão leve (rótulo por canal, não por voz) |
 | I — Exportações | Markdown/TXT/JSON/SRT/VTT concluídos; DOCX/PDF/instalador não |
