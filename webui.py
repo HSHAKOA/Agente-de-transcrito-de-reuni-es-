@@ -56,6 +56,9 @@ from meeting_transcriber.scheduling.clock import SystemClock  # noqa: E402
 from meeting_transcriber.scheduling.engine import SchedulerEngine  # noqa: E402
 from meeting_transcriber.scheduling.service import ScheduleService, ValidationError as ScheduleValidationError  # noqa: E402
 from meeting_transcriber.scheduling.store import ScheduleStore  # noqa: E402
+from meeting_transcriber.export import CONTENT_TYPES as EXPORT_CONTENT_TYPES  # noqa: E402
+from meeting_transcriber.export import EXTENSIONS as EXPORT_EXTENSIONS  # noqa: E402
+from meeting_transcriber.export import render as render_export  # noqa: E402
 from meeting_transcriber.storage.db import connect as connect_db  # noqa: E402
 from meeting_transcriber.storage.import_filesystem import import_all  # noqa: E402
 from meeting_transcriber.storage.repository import MeetingRepository  # noqa: E402
@@ -944,8 +947,29 @@ def delete_meeting(meeting_id: str) -> "tuple[bool, dict]":
     return True, {"ok": True, "message": "Reuniao removida do historico (arquivos originais preservados)."}
 
 
+def get_meeting_export(meeting_id: str, fmt: str) -> "tuple[bool, str, str, str]":
+    """GET /api/meetings/<id>/export?format=... -- devolve
+    (ok, content_type_ou_mensagem_de_erro, corpo, extensao_de_arquivo).
+    Nunca gera o nome do arquivo a partir de entrada do cliente (so
+    `meeting_id`, ja validado, + extensao fixa da tabela `EXTENSIONS`) --
+    elimina qualquer superficie de path traversal no download."""
+    try:
+        meeting_id = validation.validate_meeting_id(meeting_id)
+    except validation.ValidationError as exc:
+        return False, str(exc), "", ""
+    if fmt not in EXPORT_EXTENSIONS:
+        return False, f"Formato invalido. Use um de: {', '.join(sorted(EXPORT_EXTENSIONS))}.", "", ""
+    meeting = meeting_repository.get_meeting(meeting_id)
+    if meeting is None:
+        return False, "Reuniao nao encontrada no indice. Rode a importacao primeiro.", "", ""
+    segments = meeting_repository.list_segments(meeting_id)
+    body = render_export(fmt, meeting, segments)
+    return True, EXPORT_CONTENT_TYPES[fmt], body, EXPORT_EXTENSIONS[fmt]
+
+
 _RESUME_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/resume$")
 _MEETING_DELETE_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/delete$")
+_MEETING_EXPORT_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/export$")
 _MEETING_ITEM_PATH_RE = re.compile(r"^/api/meetings/([^/]+)$")
 _SCHEDULE_ITEM_PATH_RE = re.compile(r"^/api/schedules/([^/]+)$")
 _SCHEDULE_ACTION_PATH_RE = re.compile(r"^/api/schedules/([^/]+)/(cancel|start-now|ignore-missed)$")
@@ -1012,6 +1036,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_schedules())
             elif path == "/api/meetings":
                 self._send_json(get_meetings(query_params))
+            elif _MEETING_EXPORT_PATH_RE.match(path):
+                match = _MEETING_EXPORT_PATH_RE.match(path)
+                fmt = (query_params.get("format", [""])[0]) or "markdown"
+                self._serve_export(match.group(1), fmt)
             elif _MEETING_ITEM_PATH_RE.match(path):
                 match = _MEETING_ITEM_PATH_RE.match(path)
                 ok, payload = get_meeting_detail(match.group(1))
@@ -1138,6 +1166,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_export(self, meeting_id: str, fmt: str) -> None:
+        """GET /api/meetings/<id>/export?format=markdown|txt|json|srt|vtt
+        -- gera o arquivo na hora (nunca fica salvo em disco) e devolve
+        com `Content-Disposition: attachment` pro navegador baixar."""
+        ok, content_type_or_error, body, extension = get_meeting_export(meeting_id, fmt)
+        if not ok:
+            self._send_json({"ok": False, "message": content_type_or_error}, 404)
+            return
+        data = body.encode("utf-8")
+        filename = f"{meeting_id}.{extension}"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type_or_error)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 

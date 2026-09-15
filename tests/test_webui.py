@@ -1289,6 +1289,42 @@ def test_delete_meeting_not_found(_isolated_webui):
     assert ok is False
 
 
+def test_get_meeting_export_renders_markdown_by_default(_isolated_webui):
+    _seed_meeting(webui, "m1", title="Reuniao Exportavel")
+    webui.meeting_repository.replace_segments("m1", [{"start_seconds": 0, "end_seconds": 5, "text": "ola"}])
+    ok, content_type, body, ext = webui.get_meeting_export("m1", "markdown")
+    assert ok is True
+    assert ext == "md"
+    assert "Reuniao Exportavel" in body
+
+
+def test_get_meeting_export_supports_all_registered_formats(_isolated_webui):
+    from meeting_transcriber.export import EXTENSIONS
+
+    _seed_meeting(webui, "m1")
+    webui.meeting_repository.replace_segments("m1", [{"start_seconds": 0, "end_seconds": 5, "text": "ola"}])
+    for fmt, ext in EXTENSIONS.items():
+        ok, content_type, body, got_ext = webui.get_meeting_export("m1", fmt)
+        assert ok is True, f"formato {fmt} falhou"
+        assert got_ext == ext
+
+
+def test_get_meeting_export_rejects_unknown_format(_isolated_webui):
+    _seed_meeting(webui, "m1")
+    ok, message, body, ext = webui.get_meeting_export("m1", "docx")
+    assert ok is False
+
+
+def test_get_meeting_export_not_found(_isolated_webui):
+    ok, message, body, ext = webui.get_meeting_export("nao-existe", "markdown")
+    assert ok is False
+
+
+def test_get_meeting_export_rejects_invalid_meeting_id(_isolated_webui):
+    ok, message, body, ext = webui.get_meeting_export("../../etc/passwd", "markdown")
+    assert ok is False
+
+
 def test_delete_meeting_never_touches_real_files(_isolated_webui, tmp_path):
     meeting_dir = tmp_path / "reuniao-real"
     meeting_dir.mkdir()

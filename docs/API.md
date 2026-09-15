@@ -391,6 +391,14 @@ pode ser chamado quantas vezes o usuário quiser. Resposta:
 {"ok": true, "imported": 12, "failed": [{"meeting_id": "...", "message": "..."}], "total_scanned": 13}
 ```
 
+### `GET /api/meetings/<id>/export?format=...`
+
+`format`: `markdown` (padrão), `txt`, `json`, `srt`, `vtt`. Gera o
+arquivo na hora (nunca fica salvo em disco) e devolve com
+`Content-Disposition: attachment; filename="<id>.<ext>"` para o
+navegador baixar diretamente. `404` com `{"ok": false, "message": "..."}`
+se o formato for inválido ou a reunião não estiver no índice.
+
 ### `POST /api/meetings/<id>/delete`
 
 Sem corpo. **Soft delete**: marca a reunião como excluída no índice —
