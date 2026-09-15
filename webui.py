@@ -30,6 +30,7 @@ import threading
 import time
 import webbrowser
 from collections import deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 SETTINGS_PATH = ROOT / "data" / "settings.json"
+SCHEDULES_PATH = ROOT / "data" / "schedules.json"
 
 # webui.py em si (nao so o subprocesso que ele lanca) agora usa
 # meeting_transcriber.validation/session/settings/folder_dialog, entao
@@ -48,6 +50,10 @@ from meeting_transcriber import folder_dialog, settings, validation  # noqa: E40
 from meeting_transcriber.audio import devices as audio_devices  # noqa: E402
 from meeting_transcriber.audio.models import AudioError  # noqa: E402
 from meeting_transcriber.audio_capture import SAMPLE_RATE  # noqa: E402
+from meeting_transcriber.scheduling.clock import SystemClock  # noqa: E402
+from meeting_transcriber.scheduling.engine import SchedulerEngine  # noqa: E402
+from meeting_transcriber.scheduling.service import ScheduleService, ValidationError as ScheduleValidationError  # noqa: E402
+from meeting_transcriber.scheduling.store import ScheduleStore  # noqa: E402
 from meeting_transcriber.session import (  # noqa: E402
     STATUS_INTERRUPTED,
     MeetingSession,
@@ -182,6 +188,61 @@ state = {
     "finished_at": None,
     "exit_code": None,
 }
+
+
+def _is_recording_active() -> bool:
+    with state_lock:
+        return state["proc"] is not None
+
+
+def _get_active_meeting_dir() -> Optional[str]:
+    with state_lock:
+        return state["meeting_dir"]
+
+
+def _get_last_exit_ok() -> Optional[bool]:
+    """None = ainda rodando/desconhecido (o engine nunca deveria perguntar
+    isso enquanto is_recording_active() ainda for True); True/False so
+    depois que o subprocesso realmente terminou -- ver _reader_thread."""
+    with state_lock:
+        exit_code = state["exit_code"]
+    return None if exit_code is None else exit_code == 0
+
+
+def _scheduler_start_recording(opts: dict) -> "tuple[bool, str]":
+    # persist_as_default=False: a configuracao de audio de um agendamento
+    # e dele mesmo (Schedule), nunca deveria sobrescrever silenciosamente
+    # a preferencia global usada por inicios manuais (ver start_transcriber).
+    return start_transcriber(opts, persist_as_default=False)
+
+
+def _scheduler_request_stop() -> "tuple[bool, str]":
+    # MESMA rotina do botao "Parar" manual -- o motor do scheduler nunca
+    # tem acesso a proc.kill()/terminate() diretamente, so a este shutdown
+    # gracioso (missao, secao 9: "nao criar duas implementacoes diferentes
+    # de parada").
+    return stop_transcriber()
+
+
+# Agendamento de gravacoes (Fase C.1): schedules.json fica ao lado de
+# settings.json (config do app, fora de qualquer meetings_root -- cada
+# agendamento pode apontar pra uma raiz diferente). O motor comeca parado;
+# `main()` so chama `.start()` depois que a porta do painel estiver
+# garantidamente nossa (mesma ordem de `mark_interrupted_sessions`, pelo
+# mesmo motivo: nunca correr pra iniciar/parar nada antes de confirmar que
+# somos a unica instancia do painel rodando).
+schedule_store = ScheduleStore(SCHEDULES_PATH)
+schedule_service = ScheduleService(schedule_store)
+schedule_engine = SchedulerEngine(
+    schedule_store,
+    SystemClock(),
+    is_recording_active=_is_recording_active,
+    get_active_meeting_dir=_get_active_meeting_dir,
+    get_last_exit_ok=_get_last_exit_ok,
+    start_recording=_scheduler_start_recording,
+    request_stop=_scheduler_request_stop,
+    sample_rate=SAMPLE_RATE,
+)
 
 
 def _log(line: str) -> None:
@@ -330,7 +391,7 @@ def open_folder(path_value) -> "tuple[bool, str]":
     return True, "Pasta aberta."
 
 
-def start_transcriber(opts: dict) -> "tuple[bool, str]":
+def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[bool, str]":
     """Valida as opcoes vindas do formulario HTML, monta o comando
     `python -m meeting_transcriber ...` e sobe ele como subprocesso.
     Retorna (sucesso, mensagem) pra virar a resposta JSON do /api/start.
@@ -338,8 +399,18 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
     Nenhum campo e confiado sem validacao — ver meeting_transcriber.validation.
     O nome do arquivo de saida nao vem mais do cliente: e sempre
     `transcript.md` dentro da pasta da propria reuniao (que fica dentro da
-    raiz configurada em MEETINGS_DIR) — elimina de vez a superficie de
-    path traversal que antes existia no campo "output".
+    raiz configurada) — elimina de vez a superficie de path traversal que
+    antes existia no campo "output".
+
+    `opts["meetings_root"]`: opcional -- raiz desta gravacao especifica
+    (usado pelo scheduler, secao "Salvar em" de cada agendamento, que pode
+    apontar pra uma pasta diferente da raiz global do painel). Omitido:
+    usa a raiz global (`MEETINGS_DIR`), igual sempre foi.
+
+    `persist_as_default=False`: nao sobrescreve a preferencia global de
+    audio salva em settings.json com a escolha desta gravacao -- usado
+    pelo scheduler, cuja configuracao e por AGENDAMENTO, nunca deveria
+    silenciosamente virar o padrao da proxima gravacao manual.
     """
     try:
         model = validation.validate_model(opts.get("model") or "small")
@@ -347,6 +418,11 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         language = validation.validate_language(opts.get("language") or "pt")
         chunk_seconds = validation.validate_chunk_seconds(opts.get("chunk_seconds", 300))
         title = validation.validate_title(opts.get("title"))
+        target_root = (
+            validation.validate_meetings_root_path(opts["meetings_root"])
+            if opts.get("meetings_root")
+            else MEETINGS_DIR
+        )
     except validation.ValidationError as exc:
         return False, str(exc)
 
@@ -381,10 +457,10 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         # nunca iniciar silenciosamente numa pasta que nao existe, sem
         # espaco livre suficiente, ou sem permissao de escrita de verdade.
         try:
-            MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+            target_root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            return False, f"Nao foi possivel criar a pasta de reunioes “{MEETINGS_DIR}”: {exc}"
-        health = validation.check_folder_health(MEETINGS_DIR)
+            return False, f"Nao foi possivel criar a pasta de reunioes “{target_root}”: {exc}"
+        health = validation.check_folder_health(target_root)
         if not health.ok:
             return False, health.message
 
@@ -403,7 +479,7 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
                 return False, f"Microfone indisponivel: {audio_health.message}"
 
         meeting_id = new_meeting_id(title=title)
-        meeting_dir = MEETINGS_DIR / meeting_id
+        meeting_dir = target_root / meeting_id
         output_path = meeting_dir / "transcript.md"
         levels_path = meeting_dir / "levels.json"
 
@@ -454,14 +530,17 @@ def start_transcriber(opts: dict) -> "tuple[bool, str]":
         state["log"].clear()
 
     # lembra a escolha pra proxima reuniao (mission, secao "Configuracoes":
-    # ultimo microfone, ultima saida, capturar sistema/microfone: sim/nao).
-    settings.set_audio_preferences(
-        SETTINGS_PATH,
-        capture_system=capture_system,
-        capture_microphone=capture_microphone,
-        system_device_id=system_device_id,
-        microphone_device_id=microphone_device_id,
-    )
+    # ultimo microfone, ultima saida, capturar sistema/microfone: sim/nao)
+    # -- so pra inicio manual; um agendamento tem sua propria configuracao
+    # persistida no proprio Schedule, nunca deveria pisar no padrao global.
+    if persist_as_default:
+        settings.set_audio_preferences(
+            SETTINGS_PATH,
+            capture_system=capture_system,
+            capture_microphone=capture_microphone,
+            system_device_id=system_device_id,
+            microphone_device_id=microphone_device_id,
+        )
 
     _log(f"[painel] iniciado: {' '.join(cmd)}")
     threading.Thread(target=_reader_thread, args=(proc,), daemon=True).start()
@@ -693,7 +772,65 @@ def get_audio_levels() -> dict:
         return {}
 
 
+# -- Agendamento de gravacoes (Fase C.1) ------------------------------------
+
+def _schedule_to_api_dict(schedule, now: datetime) -> dict:
+    """Formato de `GET/POST /api/schedules*` -- o dict bruto do Schedule
+    mais campos calculados que o cliente precisaria, senao, recalcular
+    sozinho (missao, secao 6: contagem regressiva) usando o relogio do
+    SERVIDOR, nunca confiando no relogio do navegador."""
+    data = schedule.to_dict()
+    if schedule.next_run_at:
+        next_run = datetime.fromisoformat(schedule.next_run_at)
+        data["seconds_until_next_run"] = (next_run - now).total_seconds()
+    else:
+        data["seconds_until_next_run"] = None
+    return data
+
+
+def get_schedules() -> dict:
+    now = datetime.now(timezone.utc)
+    return {"schedules": [_schedule_to_api_dict(s, now) for s in schedule_service.list_all()]}
+
+
+def create_schedule(body: dict) -> "tuple[bool, dict]":
+    try:
+        schedule = schedule_service.create(body)
+    except ScheduleValidationError as exc:
+        return False, {"ok": False, "message": str(exc)}
+    schedule_engine.tick_once()  # reage imediatamente (ex.: "start now" nem precisa esperar o proximo tick)
+    return True, {"ok": True, "schedule": _schedule_to_api_dict(schedule_service.get(schedule.id), datetime.now(timezone.utc))}
+
+
+def update_schedule(schedule_id: str, body: dict) -> "tuple[bool, dict]":
+    try:
+        schedule = schedule_service.update(schedule_id, body)
+    except ScheduleValidationError as exc:
+        return False, {"ok": False, "message": str(exc)}
+    return True, {"ok": True, "schedule": _schedule_to_api_dict(schedule, datetime.now(timezone.utc))}
+
+
+def cancel_schedule(schedule_id: str) -> "tuple[bool, dict]":
+    try:
+        schedule = schedule_service.cancel(schedule_id)
+    except ScheduleValidationError as exc:
+        return False, {"ok": False, "message": str(exc)}
+    return True, {"ok": True, "schedule": _schedule_to_api_dict(schedule, datetime.now(timezone.utc))}
+
+
+def start_schedule_now(schedule_id: str) -> "tuple[bool, dict]":
+    ok, message = schedule_engine.start_now(schedule_id)
+    return ok, {"ok": ok, "message": message}
+
+
+def ignore_missed_schedule(schedule_id: str) -> "tuple[bool, dict]":
+    ok, message = schedule_engine.ignore_missed(schedule_id)
+    return ok, {"ok": ok, "message": message}
+
+
 _RESUME_PATH_RE = re.compile(r"^/api/meetings/([^/]+)/resume$")
+_SCHEDULE_ITEM_PATH_RE = re.compile(r"^/api/schedules/([^/]+)$")
+_SCHEDULE_ACTION_PATH_RE = re.compile(r"^/api/schedules/([^/]+)/(cancel|start-now|ignore-missed)$")
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -746,6 +883,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_audio_levels())
             elif self.path == "/api/audio/levels/stream":
                 self._serve_levels_stream()
+            elif self.path == "/api/schedules":
+                self._send_json(get_schedules())
             else:
                 self.send_error(404)
         except Exception:
@@ -825,6 +964,26 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 ok, msg = resume_meeting(match.group(1))
                 self._send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+                return
+            if self.path == "/api/schedules":
+                ok, payload = create_schedule(body)
+                self._send_json(payload, 200 if ok else 409)
+                return
+            match = _SCHEDULE_ACTION_PATH_RE.match(self.path)
+            if match:
+                schedule_id, action = match.group(1), match.group(2)
+                handler = {
+                    "cancel": lambda: cancel_schedule(schedule_id),
+                    "start-now": lambda: start_schedule_now(schedule_id),
+                    "ignore-missed": lambda: ignore_missed_schedule(schedule_id),
+                }[action]
+                ok, payload = handler()
+                self._send_json(payload, 200 if ok else 409)
+                return
+            match = _SCHEDULE_ITEM_PATH_RE.match(self.path)
+            if match:
+                ok, payload = update_schedule(match.group(1), body)
+                self._send_json(payload, 200 if ok else 409)
                 return
             self.send_error(404)
         except Exception:
@@ -954,12 +1113,22 @@ def main() -> None:
             entry.get("chunk_count", 0),
         )
 
+    # Motor do scheduler: mesma ordem/raciocinio da deteccao de recuperacao
+    # acima -- so sobe depois de garantir que somos a UNICA instancia do
+    # painel (senao duas instancias tentariam disparar a mesma ocorrencia
+    # agendada ao mesmo tempo). `.start()` ja roda um tick imediato (Fase
+    # C.1, secao 20: recalcula next_run_at/identifica "missed" na hora,
+    # sem esperar o primeiro intervalo).
+    schedule_engine.start()
+
     print(f"Painel disponivel em {url} (Ctrl+C aqui encerra o servidor, nao a gravacao).")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        schedule_engine.stop()
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import http.client
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,37 @@ def _isolated_webui(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(webui.audio_devices, "check_device_health", _fake_health)
+
+    # Fase C.1: schedule_store/service/engine sao construidos uma unica vez
+    # na importacao do modulo, apontando pro schedules.json REAL do
+    # projeto -- sem isolar aqui, os testes de agendamento vazariam pro
+    # disco de verdade (mesmo raciocinio de SETTINGS_PATH/MEETINGS_DIR
+    # acima). O engine reaproveita os MESMOS callables `webui._is_recording_
+    # active`/etc, que ja leem `webui.state`/`state_lock` dinamicamente --
+    # so a persistencia (`ScheduleStore`) e a instancia do engine em si
+    # precisam ser trocadas por uma nova, presa ao tmp_path.
+    from meeting_transcriber.scheduling.engine import SchedulerEngine
+    from meeting_transcriber.scheduling.service import ScheduleService
+    from meeting_transcriber.scheduling.store import ScheduleStore
+
+    monkeypatch.setattr(webui, "SCHEDULES_PATH", tmp_path / "data" / "schedules.json")
+    test_schedule_store = ScheduleStore(webui.SCHEDULES_PATH)
+    monkeypatch.setattr(webui, "schedule_store", test_schedule_store)
+    monkeypatch.setattr(webui, "schedule_service", ScheduleService(test_schedule_store))
+    monkeypatch.setattr(
+        webui,
+        "schedule_engine",
+        SchedulerEngine(
+            test_schedule_store,
+            webui.SystemClock(),
+            is_recording_active=webui._is_recording_active,
+            get_active_meeting_dir=webui._get_active_meeting_dir,
+            get_last_exit_ok=webui._get_last_exit_ok,
+            start_recording=webui._scheduler_start_recording,
+            request_stop=webui._scheduler_request_stop,
+            sample_rate=webui.SAMPLE_RATE,
+        ),
+    )
 
     with webui.state_lock:
         webui.state.update(
@@ -961,3 +993,137 @@ def test_http_start_with_malicious_output_field_has_no_effect(live_server):
     data = json.loads(body)
     assert status == 200
     assert data["ok"] is True
+
+
+# -- agendamento de gravacoes (Fase C.1) -------------------------------------
+
+def _schedule_body(tmp_path, **overrides) -> dict:
+    body = dict(
+        title="Aula de Calculo",
+        scheduled_date=(datetime.now(timezone.utc) + timedelta(days=5)).date().isoformat(),  # perto o
+        # suficiente pra cair dentro do horizonte de deteccao de conflito, longe o suficiente pra nunca virar
+        # "missed" por acidente entre a criacao do agendamento e o teste rodar
+        start_time="19:00",
+        end_time="20:40",
+        timezone="America/Sao_Paulo",
+        meetings_root=str(tmp_path / "Faculdade"),
+        system_audio_enabled=True,
+        microphone_enabled=False,
+    )
+    body.update(overrides)
+    return body
+
+
+def test_create_schedule_via_api(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    assert ok is True
+    assert payload["schedule"]["title"] == "Aula de Calculo"
+    assert payload["schedule"]["status"] == "scheduled"
+
+
+def test_create_schedule_rejects_invalid_body(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path, start_time="19:00", end_time="19:00"))
+    assert ok is False
+    assert payload["ok"] is False
+
+
+def test_create_schedule_detects_conflict(_isolated_webui, tmp_path):
+    webui.create_schedule(_schedule_body(tmp_path, title="A", start_time="19:00", end_time="20:00"))
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path, title="B", start_time="19:30", end_time="21:00"))
+    assert ok is False
+    assert "A" in payload["message"]
+
+
+def test_get_schedules_lists_created_and_includes_countdown(_isolated_webui, tmp_path):
+    webui.create_schedule(_schedule_body(tmp_path))
+    result = webui.get_schedules()
+    assert len(result["schedules"]) == 1
+    entry = result["schedules"][0]
+    assert entry["seconds_until_next_run"] is not None
+    assert entry["seconds_until_next_run"] > 0
+
+
+def test_update_schedule_via_api(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule_id = payload["schedule"]["id"]
+    ok, payload = webui.update_schedule(schedule_id, _schedule_body(tmp_path, title="Novo Titulo"))
+    assert ok is True
+    assert payload["schedule"]["title"] == "Novo Titulo"
+
+
+def test_update_unknown_schedule_returns_error(_isolated_webui, tmp_path):
+    ok, payload = webui.update_schedule("nao-existe", _schedule_body(tmp_path))
+    assert ok is False
+
+
+def test_cancel_schedule_via_api(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule_id = payload["schedule"]["id"]
+    ok, payload = webui.cancel_schedule(schedule_id)
+    assert ok is True
+    assert payload["schedule"]["status"] == "cancelled"
+
+
+def test_start_schedule_now_via_api(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule_id = payload["schedule"]["id"]
+    ok, payload = webui.start_schedule_now(schedule_id)
+    assert ok is True
+
+    status = webui.get_status()
+    assert status["running"] is True
+
+
+def test_start_schedule_now_refuses_when_manual_recording_active(_isolated_webui, tmp_path):
+    webui.start_transcriber({})
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule_id = payload["schedule"]["id"]
+    ok, payload = webui.start_schedule_now(schedule_id)
+    assert ok is False
+
+
+def test_ignore_missed_schedule_via_api_when_nothing_missed(_isolated_webui, tmp_path):
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule_id = payload["schedule"]["id"]
+    ok, payload = webui.ignore_missed_schedule(schedule_id)
+    assert ok is False
+
+
+def test_scheduled_recording_uses_its_own_meetings_root_not_the_global_one(_isolated_webui, tmp_path):
+    """O agendamento aponta pra uma pasta DIFERENTE da raiz global do
+    painel -- start_transcriber precisa respeitar isso, nao gravar na
+    MEETINGS_DIR de sempre."""
+    schedule_root = tmp_path / "OutraRaizDiferente"
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path, meetings_root=str(schedule_root)))
+    schedule_id = payload["schedule"]["id"]
+    webui.start_schedule_now(schedule_id)
+
+    status = webui.get_status()
+    assert status["meeting_dir"].startswith(str(schedule_root))
+    assert not status["meeting_dir"].startswith(str(webui.MEETINGS_DIR))
+
+
+def test_scheduled_start_does_not_overwrite_global_audio_preference(_isolated_webui, tmp_path):
+    webui.settings.set_audio_preferences(webui.SETTINGS_PATH, capture_microphone=False)
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path, microphone_enabled=True))
+    webui.start_schedule_now(payload["schedule"]["id"])
+
+    prefs = webui.settings.get_audio_preferences(webui.SETTINGS_PATH)
+    assert prefs["capture_microphone"] is False  # nao foi contaminado pela config do agendamento
+
+
+def test_schedule_engine_tick_starts_automatically(_isolated_webui, tmp_path, monkeypatch):
+    from meeting_transcriber.scheduling.clock import ManualClock
+
+    ok, payload = webui.create_schedule(_schedule_body(tmp_path))
+    schedule = webui.schedule_service.get(payload["schedule"]["id"])
+    start_at = datetime.fromisoformat(schedule.current_run.scheduled_start_at)
+
+    clock = ManualClock(start_at)
+    monkeypatch.setattr(webui.schedule_engine, "_clock", clock)
+    webui.schedule_engine.tick_once()
+
+    status = webui.get_status()
+    assert status["running"] is True
+    loaded = webui.schedule_service.get(schedule.id)
+    assert loaded.current_run.status == "recording"

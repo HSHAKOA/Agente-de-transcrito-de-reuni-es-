@@ -82,6 +82,11 @@ padrão quando omitido):
 - `system_device_id`/`microphone_device_id`: id estável do dispositivo
   (ver `GET /api/audio/devices`), ou `null`/omitido para o padrão do
   sistema.
+- `meetings_root`: opcional — raiz **desta gravação especifica**, se
+  diferente da raiz global do painel (usado pelo agendamento, Fase C.1,
+  cujo "Salvar em" pode ser uma pasta distinta por agendamento). Omitido:
+  usa a raiz global de sempre. Quando informado, **não** persiste como
+  preferência de áudio padrão (ver `docs/SCHEDULING.md`).
 
 Antes de responder, o servidor roda a checklist de saúde de
 armazenamento (pasta existe/é gravável/tem espaço) e de áudio
@@ -249,6 +254,79 @@ volta nesse canal), então SSE cobre o caso inteiro com `http.server`
 puro da biblioteca padrão — sem dependência nova, sem handshake bidirecional
 que não seria usado. Polling HTTP no ritmo de `/api/status` (1.5s) é
 longe demais da frequência pedida pro medidor parecer responsivo.
+
+## Agendamento (Fase C.1 — ver `docs/SCHEDULING.md`)
+
+### `GET /api/schedules`
+
+```json
+{
+  "schedules": [
+    {
+      "id": "sch_ab12cd34ef56",
+      "title": "Aula de Calculo",
+      "scheduled_date": "2026-09-15",
+      "start_time": "19:00",
+      "end_time": "20:40",
+      "timezone": "America/Sao_Paulo",
+      "meetings_root": "D:\\Reunioes\\Faculdade",
+      "system_audio_enabled": true,
+      "system_device_id": null,
+      "microphone_enabled": true,
+      "microphone_device_id": "...",
+      "transcription_model": "small",
+      "language": "pt",
+      "device": "cpu",
+      "chunk_seconds": 300,
+      "recurrence": {"type": "weekly", "days": [0]},
+      "status": "scheduled",
+      "next_run_at": "2026-09-15T22:00:00+00:00",
+      "seconds_until_next_run": 12345.6,
+      "current_run": { "...ver ScheduleRun.to_dict()..." },
+      "history": ["...ate 200 ocorrencias passadas..."]
+    }
+  ]
+}
+```
+
+`seconds_until_next_run` é calculado pelo servidor (nunca confie no
+relógio do navegador para a contagem regressiva).
+
+### `POST /api/schedules`
+
+Body: mesmos campos de `GET` (exceto os calculados). `title`,
+`scheduled_date` (`AAAA-MM-DD`), `start_time`/`end_time` (`HH:MM`),
+`timezone` (IANA; padrão: detectado do computador),
+`meetings_root`, `system_audio_enabled`/`microphone_enabled` (pelo menos
+um `true`), `recurrence` (`{"type": "once"|"daily"|"weekdays"|"weekly"|
+"custom_days", "days": [0..6]}`, padrão `once`). Recusa com `409` e
+`{"ok": false, "message": "..."}` se a validação falhar OU se houver
+conflito de horário com outro agendamento aberto (mensagem nomeia o
+agendamento conflitante). Sucesso: `{"ok": true, "schedule": {...}}`.
+
+### `POST /api/schedules/<id>`
+
+Edita (mesmo corpo de `POST /api/schedules`, substituindo os campos).
+Recusa se houver uma gravação em andamento para este agendamento.
+Recalcula a ocorrência atual do zero (limpa `current_run`).
+
+### `POST /api/schedules/<id>/cancel`
+
+Sem corpo. Cancela o agendamento inteiro (nunca so uma ocorrencia).
+Recusa se uma gravação estiver em andamento (pare a gravação primeiro).
+
+### `POST /api/schedules/<id>/start-now`
+
+Sem corpo. Inicia a próxima ocorrência imediatamente — antes do horário
+previsto (útil), ou depois dele ter virado `missed`/`failed` (resolve a
+pendência). Recusa se a janela da ocorrência já tiver terminado, se já
+houver outra gravação ativa, ou se o preflight falhar.
+
+### `POST /api/schedules/<id>/ignore-missed`
+
+Sem corpo. Descarta uma ocorrência `missed`/`failed` sem iniciar
+gravação — libera a próxima ocorrência (agendamentos recorrentes) ou
+encerra o agendamento (`once`).
 
 ## Códigos de erro (`AudioErrorCode`)
 

@@ -339,9 +339,20 @@ class SchedulerEngine:
 
     def _check_readiness(self, schedule: Schedule) -> dict:
         problems = []
-        folder_result = self._check_folder_health(Path(schedule.meetings_root))
-        if not folder_result.ok:
-            problems.append(folder_result.message)
+        root = Path(schedule.meetings_root)
+        try:
+            # mesmo passo que start_transcriber ja faz pro inicio manual --
+            # sem isto, um agendamento apontando pra uma pasta ainda nunca
+            # usada (ex.: "D:\Reunioes\Faculdade" antes da primeira aula)
+            # reprovaria pra sempre no preflight, mesmo sendo perfeitamente
+            # possivel cria-la na hora.
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            problems.append(f"Nao foi possivel criar a pasta “{root}”: {exc}")
+        else:
+            folder_result = self._check_folder_health(root)
+            if not folder_result.ok:
+                problems.append(folder_result.message)
         if schedule.system_audio_enabled:
             health: AudioHealthResult = self._check_device_health(
                 "output", schedule.system_device_id, self._sample_rate
