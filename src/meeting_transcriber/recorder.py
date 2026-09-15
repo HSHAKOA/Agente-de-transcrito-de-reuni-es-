@@ -70,6 +70,7 @@ def recording_worker(
     samplerate: int = SAMPLE_RATE,
     mic_factory: Callable[[], "sc.Microphone"] = get_loopback_microphone,  # noqa: F821
     on_chunk_recorded: Optional[Callable[[RecordedChunk], None]] = None,
+    on_block: Optional[Callable[[np.ndarray], None]] = None,
 ) -> None:
     """Grava continuamente ate `stop_event` ser sinalizado, colocando cada
     `RecordedChunk` concluido em `out_queue`. Ao final (inclusive o ultimo
@@ -82,6 +83,12 @@ def recording_worker(
     chama pode usar `on_chunk_recorded` pra espelhar cada bloco gravado em
     algum lugar durável (ex.: `session.MeetingSession.mark_chunk_recorded`)
     sem que este modulo precise saber nada sobre sessao/persistencia.
+
+    `on_block`, se fornecido, e chamado a cada leitura de ~`BLOCK_SECONDS`
+    (0.5s) com o bloco cru -- e o gancho que o medidor de nivel em tempo
+    quase real usa (ver `audio.levels`), bem mais frequente que
+    `on_chunk_recorded` (que so dispara a cada `chunk_seconds`, podendo ser
+    minutos).
 
     Deve rodar em sua propria thread: o loop de leitura do microfone nao
     pode ficar bloqueado esperando a transcricao terminar.
@@ -117,6 +124,11 @@ def recording_worker(
         with mic.recorder(samplerate=samplerate, channels=1) as rec:
             while not stop_event.is_set():
                 block = np.asarray(rec.record(numframes=block_frames), dtype=np.float32).reshape(-1)
+                if on_block is not None:
+                    try:
+                        on_block(block)
+                    except Exception:  # medicao de nivel nao pode derrubar a gravacao
+                        logger.exception("Falha no callback on_block")
                 buffer.append(block)
                 buffered_frames += len(block)
 

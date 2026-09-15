@@ -234,6 +234,53 @@ def test_device_open_failure_still_emits_sentinel_instead_of_hanging(tmp_path: P
     assert out_queue.get_nowait() is None
 
 
+def test_on_block_called_for_every_block_read(tmp_path: Path):
+    stop_event = threading.Event()
+    blocks = [_make_block() for _ in range(4)]  # 2s de audio, chunk_seconds bem maior (nunca fecha sozinho)
+    mic = _FakeMic(blocks, stop_event)
+    out_queue: "queue.Queue" = queue.Queue()
+    seen_blocks: List[np.ndarray] = []
+
+    recording_worker(
+        tmp_path,
+        chunk_seconds=60,
+        stop_event=stop_event,
+        out_queue=out_queue,
+        samplerate=SAMPLE_RATE,
+        mic_factory=lambda: mic,
+        on_block=seen_blocks.append,
+    )
+
+    assert len(seen_blocks) == 4  # um por leitura de BLOCK_SECONDS, nao por chunk
+
+
+def test_on_block_exception_does_not_break_recording(tmp_path: Path):
+    """Uma falha no calculo de nivel (ex.: numpy explodindo por algum
+    motivo) nao pode derrubar a gravacao -- o audio ja foi lido, so a
+    notificacao de nivel que falhou."""
+    stop_event = threading.Event()
+    blocks = [_make_block(), _make_block()]
+    mic = _FakeMic(blocks, stop_event)
+    out_queue: "queue.Queue" = queue.Queue()
+
+    def _boom(block):
+        raise RuntimeError("calculo de nivel explodiu")
+
+    recording_worker(
+        tmp_path,
+        chunk_seconds=1,
+        stop_event=stop_event,
+        out_queue=out_queue,
+        samplerate=SAMPLE_RATE,
+        mic_factory=lambda: mic,
+        on_block=_boom,
+    )
+
+    chunks = [i for i in _drain(out_queue) if i is not None]
+    assert len(chunks) == 1
+    assert chunks[0].path.exists()
+
+
 def test_written_wav_matches_expected_audio_duration(tmp_path: Path):
     stop_event = threading.Event()
     blocks = [_make_block(1.0)]  # BLOCK_SECONDS logico e 0.5s, mas o mock pode devolver o tamanho que quiser
