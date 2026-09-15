@@ -98,7 +98,19 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
   }
 
   function toggleDay(day: number) {
-    setRecurrenceDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()));
+    setRecurrenceDays((prev) => {
+      const next = prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort();
+      // backend so aceita EXATAMENTE 1 dia pra "weekly" (validation.py) --
+      // selecionar um 2o dia enquanto "Semanalmente" estiver escolhido
+      // passava a UI pro usuario silenciosamente sem avisar (o payload
+      // cortava pro primeiro dia so). Em vez disso, troca sozinho pro tipo
+      // que aceita varios dias, preservando a selecao (correcao pos-
+      // auditoria, Fase 9: "2+ dias -> custom_days").
+      if (next.length > 1) {
+        setRecurrenceType((t) => (t === "weekly" ? "custom_days" : t));
+      }
+      return next;
+    });
   }
 
   async function handleSave() {
@@ -211,7 +223,17 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
         <label className="mb-1.5 block text-xs font-medium text-neutral-500">Repetição</label>
         <select
           value={recurrenceType}
-          onChange={(e) => setRecurrenceType(e.target.value as RecurrenceType)}
+          onChange={(e) => {
+            const next = e.target.value as RecurrenceType;
+            setRecurrenceType(next);
+            // troca manual pra "weekly" com varios dias ja marcados (ex.:
+            // vindo de "custom_days"): mantem so o primeiro, visivelmente,
+            // em vez de deixar a UI mostrar 3 dias marcados mas so 1 ser
+            // enviado ao backend (mesmo raciocinio de toggleDay acima).
+            if (next === "weekly" && recurrenceDays.length > 1) {
+              setRecurrenceDays((prev) => prev.slice(0, 1));
+            }
+          }}
           className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
         >
           {RECURRENCE_OPTIONS.map((o) => (
