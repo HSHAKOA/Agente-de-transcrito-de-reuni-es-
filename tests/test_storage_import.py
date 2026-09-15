@@ -150,6 +150,43 @@ def test_import_meeting_missing_transcript_file_still_imports_metadata(tmp_path:
     assert repo.get_meeting("reuniao-3") is not None
 
 
+def test_import_meeting_falls_back_to_transcript_md_in_meeting_dir_when_metadata_path_is_stale(
+    tmp_path: Path, repo: MeetingRepository
+):
+    """P2 pos-auditoria: metadata.json pode apontar pra um caminho absoluto
+    que nao existe mais (pasta movida, backup restaurado noutra maquina) --
+    antes de desistir, tenta `meeting_dir/transcript.md` (onde
+    start_transcriber sempre grava de verdade)."""
+    meeting_dir = _make_meeting_dir(tmp_path, "reuniao-movida")
+    # simula o cenario: o metadata.json aponta pro caminho ANTIGO (que nao
+    # existe mais nesta maquina/pasta), mas o transcript.md real esta
+    # dentro da propria pasta da reuniao (copiado junto num backup, por
+    # exemplo) -- nunca reescreve o metadata.json, so tenta o fallback.
+    (meeting_dir / "transcript.md").write_text(
+        "# Titulo\n\n## Transcricao\n\n**[00:00:00]** Recuperado via fallback.\n\n",
+        encoding="utf-8",
+    )
+    metadata_path = meeting_dir / "metadata.json"
+    import json
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    original_transcript_path = metadata["transcript_path"]
+    metadata["transcript_path"] = str(tmp_path / "caminho-que-nao-existe-mais.md")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    assert not Path(original_transcript_path).exists() or True  # o path antigo pode ate existir, nao importa aqui
+
+    result = import_meeting(repo, meeting_dir)
+
+    assert result.ok is True
+    assert result.segments_imported == 1
+    segments = repo.list_segments("reuniao-movida")
+    assert segments[0]["text"] == "Recuperado via fallback."
+    # nunca reescreve o metadata.json so por causa do fallback de leitura
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["transcript_path"] == str(
+        tmp_path / "caminho-que-nao-existe-mais.md"
+    )
+
+
 def test_import_all_continues_after_one_meeting_fails(tmp_path: Path, repo: MeetingRepository):
     root = tmp_path / "roots" / "raiz1"
     good_dir = _make_meeting_dir(tmp_path, "boa")

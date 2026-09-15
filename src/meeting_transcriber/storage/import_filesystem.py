@@ -88,11 +88,20 @@ def import_meeting(repo: MeetingRepository, meeting_dir: Path) -> ImportResult:
 
         segments_data: List[dict] = []
         transcript_path_str = metadata.get("transcript_path")
-        if transcript_path_str:
-            transcript_path = Path(transcript_path_str)
-            if transcript_path.exists():
-                raw = transcript_path.read_text(encoding="utf-8", errors="replace")
-                segments_data = parse_markdown_segments(raw)
+        transcript_path = Path(transcript_path_str) if transcript_path_str else None
+        if transcript_path is None or not transcript_path.exists():
+            # metadata.json pode apontar pra um caminho absoluto que nao
+            # existe mais (pasta movida, backup restaurado noutra maquina)
+            # -- antes de desistir, tenta o local padrao (transcript.md
+            # dentro da PROPRIA pasta da reuniao, que e onde start_transcriber
+            # sempre grava). Nunca reescreve metadata.json com esse fallback:
+            # e so uma tentativa de leitura, nao uma migracao.
+            fallback_path = meeting_dir / "transcript.md"
+            if fallback_path.exists():
+                transcript_path = fallback_path
+        if transcript_path is not None and transcript_path.exists():
+            raw = transcript_path.read_text(encoding="utf-8", errors="replace")
+            segments_data = parse_markdown_segments(raw)
 
         label = _speaker_label(metadata)
         if label:
