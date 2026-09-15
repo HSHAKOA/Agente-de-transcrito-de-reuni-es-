@@ -76,11 +76,11 @@ function NextRecordingCard() {
   );
 }
 
-function MeetingRow({ meeting }: { meeting: MeetingRecord }) {
+function MeetingRow({ meeting, onSelect }: { meeting: MeetingRecord; onSelect: (id: string) => void }) {
   return (
-    <a
-      href={api.meetingExportUrl(meeting.id, "markdown")}
-      className="flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-neutral-800/60"
+    <button
+      onClick={() => onSelect(meeting.id)}
+      className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-800/60"
     >
       <div className="min-w-0">
         <p className="truncate text-sm font-medium">{meeting.title}</p>
@@ -90,11 +90,11 @@ function MeetingRow({ meeting }: { meeting: MeetingRecord }) {
         <span className="text-sm text-neutral-400">{formatDuration(meeting.duration_seconds)}</span>
         <StatusPill status={meeting.status} />
       </div>
-    </a>
+    </button>
   );
 }
 
-function RecentMeetings() {
+function RecentMeetings({ onSelectMeeting }: { onSelectMeeting: (id: string) => void }) {
   const { meetings, total, error } = useRecentMeetings(5);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MeetingRecord[] | null>(null);
@@ -146,7 +146,7 @@ function RecentMeetings() {
       {!searching && list && list.length > 0 && (
         <div className="-mx-1">
           {list.map((m) => (
-            <MeetingRow key={m.id} meeting={m} />
+            <MeetingRow key={m.id} meeting={m} onSelect={onSelectMeeting} />
           ))}
         </div>
       )}
@@ -162,7 +162,11 @@ function RecentMeetings() {
  * somente-leitura: iniciar/parar gravação, criar agendamento, e escolher
  * pasta continuam exigindo o painel real em `index.html` por enquanto.
  */
-export function Dashboard() {
+interface DashboardProps {
+  onSelectMeeting: (id: string) => void;
+}
+
+export function Dashboard({ onSelectMeeting }: DashboardProps) {
   const { status } = useBackendStatus();
   const { settings } = useSettingsInfo();
   const connected = status !== null;
@@ -186,7 +190,7 @@ export function Dashboard() {
 
       <div className="grid gap-4">
         <NextRecordingCard />
-        <RecentMeetings />
+        <RecentMeetings onSelectMeeting={onSelectMeeting} />
 
         {settings && (
           <Card icon={<FolderOpen className="size-4 text-neutral-500" />} className="text-sm">

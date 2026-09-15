@@ -21,14 +21,17 @@ ponta e está testado.
 
 ## P1 — reduzem a experiência ou a superfície de produto
 
-1. **Telas de produto React (Fase F)**
-   - Impacto: `index.html` continua sendo a única interface real; a
-     migração para React não avançou além do toolchain + cliente HTTP
-     tipado (`frontend/`).
-   - Próximo passo: construir Dashboard, Nova Reunião, Gravação (com o
-     player de nível + transcrição ao vivo via SSE) e Histórico, nessa
-     ordem — são as telas com maior valor de demonstração. `frontend/src/services/api.ts`
-     e `frontend/src/types/api.ts` já cobrem 100% do contrato atual.
+1. **Telas de produto React (Fase F)** — em andamento.
+   - Feito: **Dashboard** (`frontend/src/pages/Dashboard.tsx`) — status de
+     conexão, próxima gravação agendada com contagem regressiva real,
+     histórico recente com busca funcional, pasta/espaço livre. Somente
+     leitura; verificado contra o `webui.py` real (proxy do Vite
+     round-tripando `/api/status`/`/api/schedules`/`/api/meetings`).
+   - Falta: Nova Reunião (formulário + preflight), Gravação (nível de
+     áudio + transcrição ao vivo via SSE + parar), Histórico completo
+     (paginação, filtro, exportar), Agendamentos (criar/editar/cancelar),
+     Configurações. `index.html` continua sendo a única interface capaz
+     de iniciar/parar uma gravação de verdade.
 
 2. **Migração de `schedules.json` para SQLite**
    - Impacto: nenhum na prática (o scheduler funciona corretamente em
