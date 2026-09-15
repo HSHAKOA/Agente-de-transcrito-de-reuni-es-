@@ -1,18 +1,12 @@
-import { ArrowLeft, FolderOpen, Mic, Volume2 } from "lucide-react";
+import { ArrowLeft, FolderOpen } from "lucide-react";
 import { useEffect, useState } from "react";
+import { AudioSourcePicker } from "../components/AudioSourcePicker";
 import { LevelBar } from "../components/LevelBar";
 import { useAudioDevices } from "../hooks/useAudioDevices";
 import { useSettingsInfo } from "../hooks/useSettingsInfo";
 import { api } from "../services/api";
 import type { AudioTestResult, Device, WhisperModel } from "../types/api";
-
-const MODELS: { value: WhisperModel; label: string }[] = [
-  { value: "tiny", label: "Rápido (tiny)" },
-  { value: "base", label: "Base" },
-  { value: "small", label: "Equilibrado (small)" },
-  { value: "medium", label: "Preciso (medium)" },
-  { value: "large-v3", label: "Máxima precisão (large-v3)" },
-];
+import { WHISPER_MODELS } from "../utils/whisperModels";
 
 interface NewMeetingProps {
   onBack: () => void;
@@ -212,7 +206,7 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
             onChange={(e) => setModel(e.target.value as WhisperModel)}
             className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
           >
-            {MODELS.map((m) => (
+            {WHISPER_MODELS.map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}
               </option>
@@ -253,57 +247,18 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
         <p className="mb-3 font-medium">Fontes de áudio</p>
         {devicesError && <p className="mb-2 text-sm text-red-400">{devicesError}</p>}
 
-        <div className="space-y-3">
-          <div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={captureSystem} onChange={(e) => setCaptureSystem(e.target.checked)} />
-              <Volume2 className="size-4 text-neutral-400" />
-              Áudio do computador
-            </label>
-            {captureSystem && (
-              <select
-                value={systemDeviceId}
-                onChange={(e) => setSystemDeviceId(e.target.value)}
-                className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs outline-none"
-              >
-                <option value="">Padrão do sistema</option>
-                {outputs.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                    {d.is_default ? " (padrão)" : ""}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          <div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={captureMicrophone}
-                onChange={(e) => setCaptureMicrophone(e.target.checked)}
-              />
-              <Mic className="size-4 text-neutral-400" />
-              Microfone
-            </label>
-            {captureMicrophone && (
-              <select
-                value={microphoneDeviceId}
-                onChange={(e) => setMicrophoneDeviceId(e.target.value)}
-                className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs outline-none"
-              >
-                <option value="">Padrão do sistema</option>
-                {inputs.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                    {d.is_default ? " (padrão)" : ""}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </div>
+        <AudioSourcePicker
+          inputs={inputs}
+          outputs={outputs}
+          captureSystem={captureSystem}
+          setCaptureSystem={setCaptureSystem}
+          captureMicrophone={captureMicrophone}
+          setCaptureMicrophone={setCaptureMicrophone}
+          systemDeviceId={systemDeviceId}
+          setSystemDeviceId={setSystemDeviceId}
+          microphoneDeviceId={microphoneDeviceId}
+          setMicrophoneDeviceId={setMicrophoneDeviceId}
+        />
 
         <button
           onClick={handleTestAudio}

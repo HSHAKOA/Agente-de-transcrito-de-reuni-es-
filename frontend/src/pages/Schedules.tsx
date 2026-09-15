@@ -39,12 +39,14 @@ function ScheduleRow({
   onStartNow,
   onCancel,
   onIgnoreMissed,
+  onEdit,
 }: {
   schedule: Schedule;
   busy: boolean;
   onStartNow: () => void;
   onCancel: () => void;
   onIgnoreMissed: () => void;
+  onEdit: () => void;
 }) {
   const run = schedule.current_run;
   const window = run ? `${formatTime(run.scheduled_start_at)}–${formatTime(run.scheduled_end_at)}` : "—";
@@ -84,13 +86,22 @@ function ScheduleRow({
               Ignorar
             </button>
           ) : (
-            <button
-              onClick={onCancel}
-              disabled={busy}
-              className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
-            >
-              Cancelar
-            </button>
+            <>
+              <button
+                onClick={onEdit}
+                disabled={busy}
+                className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Editar
+              </button>
+              <button
+                onClick={onCancel}
+                disabled={busy}
+                className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+            </>
           )}
         </div>
       )}
@@ -100,16 +111,16 @@ function ScheduleRow({
 
 interface SchedulesProps {
   onBack: () => void;
+  onNew: () => void;
+  onEdit: (schedule: Schedule) => void;
 }
 
 /**
- * Lista de agendamentos (F.8). Ainda sem "Editar"/"Novo agendamento" --
- * exigem um formulário completo (data/hora/recorrência/dispositivos),
- * deixado para uma próxima etapa (ver docs/PENDENCIAS.md). As ações que
- * JÁ existem como chamadas simples de API (iniciar agora, cancelar,
- * ignorar perdida) estão todas aqui, reais.
+ * Lista de agendamentos (F.8), com criar/editar (`pages/ScheduleForm.tsx`)
+ * e as ações que já são chamadas simples de API (iniciar agora, cancelar,
+ * ignorar perdida).
  */
-export function Schedules({ onBack }: SchedulesProps) {
+export function Schedules({ onBack, onNew, onEdit }: SchedulesProps) {
   const { schedules, error: loadError, refresh } = useSchedules();
   const { busyId, error: actionError, startNow, cancel, ignoreMissed } = useScheduleActions(refresh);
 
@@ -125,7 +136,15 @@ export function Schedules({ onBack }: SchedulesProps) {
         Voltar
       </button>
 
-      <h1 className="text-xl font-semibold tracking-tight">Agendamentos</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold tracking-tight">Agendamentos</h1>
+        <button
+          onClick={onNew}
+          className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 transition-colors hover:bg-neutral-800"
+        >
+          + Novo agendamento
+        </button>
+      </div>
 
       {(loadError || actionError) && <p className="mt-3 text-sm text-red-400">{loadError ?? actionError}</p>}
 
@@ -147,6 +166,7 @@ export function Schedules({ onBack }: SchedulesProps) {
                 onStartNow={() => startNow(s.id)}
                 onCancel={() => cancel(s.id)}
                 onIgnoreMissed={() => ignoreMissed(s.id)}
+                onEdit={() => onEdit(s)}
               />
             ))}
           </div>

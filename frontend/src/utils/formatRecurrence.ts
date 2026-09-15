@@ -1,6 +1,6 @@
 import type { Recurrence } from "../types/api";
 
-const WEEKDAY_NAMES = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+export const WEEKDAY_NAMES = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 
 /** Recurrence -> "Uma vez" / "Todo dia" / "Dias úteis" / "Toda Seg" /
  * "Seg, Qua, Sex" -- rótulo curto pra lista de agendamentos. */

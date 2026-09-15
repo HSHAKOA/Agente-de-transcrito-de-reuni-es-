@@ -5,14 +5,17 @@ import { Dashboard } from "../pages/Dashboard";
 import { MeetingDetail } from "../pages/MeetingDetail";
 import { NewMeeting } from "../pages/NewMeeting";
 import { Recording } from "../pages/Recording";
+import { ScheduleForm } from "../pages/ScheduleForm";
 import { Schedules } from "../pages/Schedules";
+import type { Schedule } from "../types/api";
 
 type View =
   | { name: "dashboard" }
   | { name: "meeting"; id: string }
   | { name: "recording" }
   | { name: "schedules" }
-  | { name: "new-meeting" };
+  | { name: "new-meeting" }
+  | { name: "schedule-form"; existing?: Schedule };
 
 /**
  * A Fase F ganhou três telas de produto de verdade (Dashboard, Detalhe
@@ -65,7 +68,21 @@ export function App() {
         <Recording status={status} onStopped={() => setView({ name: "dashboard" })} />
       )}
 
-      {view.name === "schedules" && <Schedules onBack={() => setView({ name: "dashboard" })} />}
+      {view.name === "schedules" && (
+        <Schedules
+          onBack={() => setView({ name: "dashboard" })}
+          onNew={() => setView({ name: "schedule-form" })}
+          onEdit={(schedule) => setView({ name: "schedule-form", existing: schedule })}
+        />
+      )}
+
+      {view.name === "schedule-form" && (
+        <ScheduleForm
+          existing={view.existing}
+          onBack={() => setView({ name: "schedules" })}
+          onSaved={() => setView({ name: "schedules" })}
+        />
+      )}
 
       {view.name === "new-meeting" && (
         <NewMeeting
