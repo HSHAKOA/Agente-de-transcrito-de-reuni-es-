@@ -30,11 +30,14 @@ Branch: `main`.
 
 ## O que está parcialmente pronto
 
-- **Frontend React** (`frontend/`): toolchain funcionando (Vite + React
-  19 + TS + Tailwind v4), cliente HTTP tipado cobrindo 100% do contrato
-  atual (`services/api.ts`/`types/api.ts`, verificado com `npm run
-  build` + `npx oxlint`). **Nenhuma tela de produto construída.**
-  `index.html` continua sendo a interface real e ativa.
+- **Frontend React** (`frontend/`): toolchain funcionando, cliente HTTP
+  tipado cobrindo 100% do contrato atual. **Cinco telas reais
+  construídas** — Dashboard, Detalhe da Reunião, Gravação (SSE),
+  Agendamentos (listar + ações), Nova Reunião (formulário completo,
+  já inicia gravações de verdade). O ciclo criar → gravar → ver é
+  navegável inteiramente em React. Faltam: criar/editar agendamento
+  (formulário de recorrência) e Configurações. `index.html` continua
+  sendo a interface de referência até a paridade completa.
 - **SQLite** (Fase E): `meetings`/`meeting_segments` prontos e testados;
   faltam `audio_chunks`/`transcription_jobs` como tabelas próprias e a
   migração de `schedules.json`.
@@ -83,11 +86,14 @@ Ver `docs/DATABASE.md` para o schema completo e o que falta.
 
 ## React
 
-`frontend/`. Próximo passo CONCRETO: construir a tela de Dashboard
-(consumindo `api.getStatus()`, `api.getSchedules()`, `api.getMeetings()`
-— todos já tipados) e a tela de Gravação (consumindo
-`api.audioLevelsStreamUrl()`/`api.transcriptionStreamUrl()` via
-`EventSource`). Ver `frontend/README.md` e `docs/PENDENCIAS.md` item P1#1.
+`frontend/`. Dashboard, Detalhe da Reunião, Gravação, Agendamentos (só
+leitura + ações simples) e Nova Reunião já existem e funcionam contra o
+backend real. Próximo passo CONCRETO: um formulário de
+criar/editar agendamento (data, hora início/fim, timezone, recorrência,
+pasta, dispositivos — o backend já aceita tudo via
+`api.createSchedule()`/`api.updateSchedule()`, já tipados em
+`services/api.ts`) e uma tela de Configurações simples. Ver
+`docs/PENDENCIAS.md` item P1#1.
 
 ## Transcrição
 
@@ -156,11 +162,18 @@ Ver `docs/PENDENCIAS.md` para a lista completa (inclui P3).
 1. Rodar `pytest -q` (backend) e `cd frontend && npm run build && npx oxlint`
    (frontend) pra confirmar que nada regrediu desde o fim desta sessão.
 2. Ler `docs/PENDENCIAS.md` P1#1.
-3. Construir a tela de Dashboard em `frontend/src/app/` consumindo
-   `api.getStatus()` + `api.getSchedules()` + `api.getMeetings({limit: 5})`
-   (todos já implementados e tipados em `services/api.ts`) — primeira
-   tela de produto real da Fase F.
-4. Não remover `index.html`/`webui.py` até a paridade funcional da nova
+3. Construir `frontend/src/pages/ScheduleForm.tsx` (criar E editar,
+   mesmo formulário) consumindo `api.createSchedule()`/
+   `api.updateSchedule()` (já tipados) — campos: título, data, hora
+   início/fim, timezone (default: detectar do navegador via
+   `Intl.DateTimeFormat().resolvedOptions().timeZone`), recorrência
+   (once/daily/weekdays/weekly/custom_days), pasta, fontes de áudio
+   (reaproveitar os selects já feitos em `pages/NewMeeting.tsx`).
+   Reaproveitar a lógica de conflito: o backend já recusa com uma
+   mensagem clara (`ValidationError`), só precisa ser exibida.
+4. Depois: uma tela de Configurações simples (hoje só a pasta é
+   ajustável, dentro de Nova Reunião).
+5. Não remover `index.html`/`webui.py` até a paridade funcional da nova
    interface ser demonstrada (ver `docs/ROADMAP.md`, Fase F).
 
 ## Comandos úteis

@@ -45,16 +45,20 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
       pra SQLite, tabelas de `action_items`/`decisions`/`topics`/`speakers`/
       `transcription_jobs` (dependem de fases G/H não implementadas). Ver
       `docs/DATABASE.md`.
-- [~] **Fase F — Migração do frontend para React.** Toolchain funcionando
-      (Vite + React 19 + TypeScript + Tailwind v4, `npm run build`
-      verificado) e cliente HTTP tipado (`frontend/src/services/api.ts`,
-      `frontend/src/types/api.ts`) cobrindo **todo** o contrato real atual
-      (status/settings/recovery + áudio C + agendamento C.1 + transcrição
-      ao vivo D + histórico/export E). **Nenhuma tela de produto foi
-      construída ainda** (Dashboard/Nova reunião/Gravação/Histórico/
-      Agendamentos/Configurações) — `index.html`/`webui.py` continuam
-      sendo a interface real e ativa. Próximo passo concreto documentado em
-      `docs/PENDENCIAS.md`/`docs/HANDOFF_PROXIMA_SESSAO.md`.
+- [~] **Fase F — Migração do frontend para React.** Toolchain (Vite +
+      React 19 + TypeScript + Tailwind v4) e cliente HTTP tipado cobrindo
+      **todo** o contrato real atual. **Cinco telas de produto reais
+      construídas**: Dashboard (status, próxima gravação com contagem
+      regressiva, busca + histórico), Detalhe da Reunião (transcrição,
+      exportação em 5 formatos), Gravação (níveis de áudio + transcrição
+      ao vivo via SSE, parar), Agendamentos (listar, iniciar agora,
+      cancelar, ignorar perdida), Nova Reunião (formulário completo,
+      testar áudio, iniciar) — o ciclo criar → gravar → ver já é
+      navegável inteiramente em React. Falta: criar/editar agendamento
+      (precisa de um formulário de recorrência) e Configurações.
+      `index.html`/`webui.py` continuam sendo a interface de referência
+      (paridade funcional completa ainda não demonstrada — ver
+      `docs/PENDENCIAS.md`).
 - [ ] **Fase G — Inteligência.** Não implementada. Arquitetura plugável
       (provider de resumo/decisões/tarefas/tópicos, Ollama/OpenAI/
       Anthropic/Gemini opcionais) fica documentada como próximo passo, não
