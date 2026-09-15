@@ -2,12 +2,11 @@ import { Calendar, CircleDot, FolderOpen, HardDrive, History, Search } from "luc
 import { useMemo, useState } from "react";
 import { Card } from "../components/Card";
 import { formatCountdown, useCountdown } from "../hooks/useCountdown";
-import { useBackendStatus } from "../hooks/useBackendStatus";
 import { useRecentMeetings } from "../hooks/useRecentMeetings";
 import { useSchedules } from "../hooks/useSchedules";
 import { useSettingsInfo } from "../hooks/useSettingsInfo";
 import { api } from "../services/api";
-import type { MeetingRecord } from "../types/api";
+import type { MeetingRecord, StatusResponse } from "../types/api";
 import { formatDateTime } from "../utils/formatDate";
 import { formatBytes } from "../utils/formatBytes";
 import { formatDuration } from "../utils/formatDuration";
@@ -163,11 +162,12 @@ function RecentMeetings({ onSelectMeeting }: { onSelectMeeting: (id: string) => 
  * pasta continuam exigindo o painel real em `index.html` por enquanto.
  */
 interface DashboardProps {
+  status: StatusResponse | null;
   onSelectMeeting: (id: string) => void;
+  onViewRecording: () => void;
 }
 
-export function Dashboard({ onSelectMeeting }: DashboardProps) {
-  const { status } = useBackendStatus();
+export function Dashboard({ status, onSelectMeeting, onViewRecording }: DashboardProps) {
   const { settings } = useSettingsInfo();
   const connected = status !== null;
 
@@ -182,10 +182,13 @@ export function Dashboard({ onSelectMeeting }: DashboardProps) {
       </div>
 
       {status?.running && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-800/50 bg-red-950/30 px-4 py-2.5 text-sm text-red-300">
+        <button
+          onClick={onViewRecording}
+          className="mb-4 flex w-full items-center gap-2 rounded-lg border border-red-800/50 bg-red-950/30 px-4 py-2.5 text-left text-sm text-red-300 transition-colors hover:bg-red-950/50"
+        >
           <CircleDot className="size-3 animate-pulse fill-red-400 text-red-400" />
           Gravando agora — {status.output_path ?? "reunião em andamento"}
-        </div>
+        </button>
       )}
 
       <div className="grid gap-4">
