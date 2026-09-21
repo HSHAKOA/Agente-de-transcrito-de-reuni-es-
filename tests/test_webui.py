@@ -377,6 +377,138 @@ def test_shutdown_sequence_escalates_to_kill_as_last_resort():
     assert proc.killed
 
 
+def _slow_finishing_process(finish_at_tick: int):
+    """Processo que so sai no tick `finish_at_tick` (1 tick = 1 s simulado):
+    o gravador drenando a fila do Whisper depois do sinal de parada."""
+    proc = FakePopen(["x"])
+    clock = {"t": 0}
+
+    def _sleep(_):
+        clock["t"] += 1
+        if clock["t"] >= finish_at_tick:
+            proc.returncode = 0
+
+    return proc, clock, _sleep
+
+
+def test_shutdown_sequence_keeps_waiting_while_the_recorder_makes_progress():
+    """Regressao real: a janela fixa de 30 s estourava com um bloco de
+    300 s ainda na fila do Whisper e o painel fazia terminate(), deixando os
+    ultimos blocos sem transcrever. Enquanto o token de progresso muda, a
+    janela sem progresso reinicia."""
+    proc, clock, sleep_fn = _slow_finishing_process(finish_at_tick=100)
+
+    stage = webui.shutdown_sequence(
+        proc, graceful_signal=99, graceful_timeout=30.0, sleep_fn=sleep_fn, poll_interval=1.0,
+        progress_fn=lambda: clock["t"] // 20,  # um bloco novo a cada 20 s, nunca 30 s parado
+    )
+
+    assert stage == "graceful"
+    assert not proc.terminated and not proc.killed
+
+
+def test_shutdown_sequence_same_scenario_without_progress_still_escalates():
+    """O contraste do teste acima: sem token de progresso o comportamento e
+    o de sempre (janela fixa), entao o mesmo processo lento leva terminate()."""
+    proc, _clock, sleep_fn = _slow_finishing_process(finish_at_tick=100)
+
+    def _sleep_and_die_on_terminate(seconds):
+        sleep_fn(seconds)
+        if proc.terminated:
+            proc.returncode = 0
+
+    stage = webui.shutdown_sequence(
+        proc, graceful_signal=99, graceful_timeout=30.0, sleep_fn=_sleep_and_die_on_terminate, poll_interval=1.0
+    )
+
+    assert stage == "terminate"
+
+
+def test_shutdown_sequence_escalates_when_progress_stalls():
+    proc, clock, sleep_fn = _slow_finishing_process(finish_at_tick=10_000)
+
+    def _sleep(seconds):
+        sleep_fn(seconds)
+        if proc.terminated:
+            proc.returncode = 0
+
+    stage = webui.shutdown_sequence(
+        proc, graceful_signal=99, graceful_timeout=30.0, sleep_fn=_sleep, poll_interval=1.0,
+        progress_fn=lambda: "sempre-igual",
+    )
+
+    assert stage == "terminate"
+    assert clock["t"] < 40  # ~30 s de janela + terminate, nunca uma espera longa
+
+
+def test_shutdown_sequence_absolute_cap_stops_a_recorder_that_never_finishes():
+    proc, clock, sleep_fn = _slow_finishing_process(finish_at_tick=10_000)
+
+    def _sleep(seconds):
+        sleep_fn(seconds)
+        if proc.terminated:
+            proc.returncode = 0
+
+    stage = webui.shutdown_sequence(
+        proc, graceful_signal=99, graceful_timeout=30.0, sleep_fn=_sleep, poll_interval=1.0,
+        progress_fn=lambda: clock["t"],  # "progride" para sempre
+        max_graceful_seconds=50.0,
+    )
+
+    assert stage == "terminate"
+    assert clock["t"] <= 60
+
+
+def test_shutdown_sequence_treats_a_failing_progress_fn_as_no_progress():
+    proc, clock, sleep_fn = _slow_finishing_process(finish_at_tick=10_000)
+
+    def _sleep(seconds):
+        sleep_fn(seconds)
+        if proc.terminated:
+            proc.returncode = 0
+
+    def _broken():
+        raise RuntimeError("state.json ilegivel")
+
+    stage = webui.shutdown_sequence(
+        proc, graceful_signal=99, graceful_timeout=30.0, sleep_fn=_sleep, poll_interval=1.0, progress_fn=_broken
+    )
+
+    assert stage == "terminate"
+    assert clock["t"] < 40
+
+
+def test_session_progress_token_changes_as_the_recorder_advances(tmp_path):
+    from meeting_transcriber.session import MeetingSession
+
+    assert webui._session_progress_token(str(tmp_path / "nao-existe")) is None
+
+    session = MeetingSession.create(base_dir=tmp_path, title="T", model="small", language="pt", device="cpu")
+    session.mark_recording()
+    first = webui._session_progress_token(str(session.meeting_dir))
+    session.mark_chunk_recorded(index=0, path=session.chunks_dir / "chunk_00000.wav", start_offset_seconds=0.0, duration_seconds=5.0)
+    second = webui._session_progress_token(str(session.meeting_dir))
+    session.mark_chunk_transcribed(0, 5.0)
+    third = webui._session_progress_token(str(session.meeting_dir))
+
+    assert first != second != third
+    assert first != third
+
+
+def test_stop_transcriber_gives_the_recorder_at_least_one_chunk_of_time(_isolated_webui, monkeypatch):
+    """A janela sem progresso tem que caber a transcricao de UM bloco."""
+    captured = {}
+    monkeypatch.setattr(webui, "shutdown_sequence", lambda p, **kw: captured.update(kw))
+
+    webui.start_transcriber({"chunk_seconds": 120})
+    ok, _ = webui.stop_transcriber()
+
+    assert ok
+    assert _wait_for(lambda: "graceful_timeout" in captured)
+    assert captured["graceful_timeout"] == 120.0
+    assert callable(captured["progress_fn"])
+
+
 def test_stop_stop_concurrent_only_one_wins(_isolated_webui, monkeypatch):
     """P1-5: um segundo /api/stop enquanto o primeiro ainda esta em
     andamento precisa ser RECUSADO (nao disparar uma segunda thread de

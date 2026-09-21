@@ -34,7 +34,8 @@ interface RecordingProps {
  * SÓ por App.tsx observando `status.running` via polling (correção
  * pós-auditoria P1-5) -- chamar uma navegação local aqui, imediatamente
  * após POST /api/stop retornar 200, escondia o usuário do encerramento
- * gracioso real (que pode levar até ~35s) atrás de uma Dashboard que
+ * gracioso real (que pode levar minutos: o gravador ainda transcreve a fila
+ * de blocos pendentes) atrás de uma Dashboard que
  * ainda mostrava "Gravando agora".
  */
 export function Recording({ status }: RecordingProps) {

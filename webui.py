@@ -87,7 +87,18 @@ _DRAIN_CAP_BYTES = MAX_BODY_BYTES * 4  # teto pra drenar um corpo rejeitado sem 
 
 # Escalonamento do encerramento gracioso: sinal gracioso -> terminate() -> kill().
 # So avanca de estagio se o anterior nao surtir efeito dentro do timeout.
+#
+# GRACEFUL_TIMEOUT_SECONDS e a janela SEM PROGRESSO (minimo): ao receber o
+# sinal, o gravador grava o bloco parcial e ainda transcreve a fila -- e um
+# bloco de `chunk_seconds` (300 s) leva bem mais que 30 s no Whisper em CPU.
+# Com a janela fixa de 30 s, todo "Parar" de uma gravacao longa estourava o
+# prazo e caia em terminate(): os ultimos blocos ficavam sem transcrever
+# (observado numa gravacao real de aula: 9 de 11 blocos). Por isso
+# `stop_transcriber` amplia a janela para `chunk_seconds` e a reinicia
+# enquanto o gravador avanca (ver `_session_progress_token`), com o teto
+# absoluto MAX_GRACEFUL_SECONDS.
 GRACEFUL_TIMEOUT_SECONDS = 30.0
+MAX_GRACEFUL_SECONDS = 1800.0
 TERMINATE_TIMEOUT_SECONDS = 5.0
 
 # frequencia do stream SSE do medidor de audio -- dentro da faixa de 5-15
@@ -145,6 +156,43 @@ def _wait_until_dead(proc: subprocess.Popen, timeout: float, sleep_fn, poll_inte
     return proc.poll() is not None
 
 
+def _wait_for_graceful_exit(
+    proc: subprocess.Popen,
+    idle_timeout: float,
+    max_total: float,
+    progress_fn,
+    sleep_fn,
+    poll_interval: float,
+) -> bool:
+    """Espera `proc` sair por conta propria. `idle_timeout` e a janela SEM
+    progresso: se `progress_fn()` devolver um token diferente do anterior
+    (ex.: mais um bloco transcrito), a janela reinicia -- um gravador que
+    avanca nao e um gravador travado. `max_total` e o teto absoluto. Sem
+    `progress_fn` (ou se ele falhar), equivale a esperar `idle_timeout`."""
+
+    def _token(fallback):
+        if progress_fn is None:
+            return fallback
+        try:
+            return progress_fn()
+        except Exception:
+            return fallback  # falha ao medir progresso nunca conta como progresso
+
+    last = _token(None)
+    elapsed = idle = 0.0
+    while elapsed < max_total and idle < idle_timeout:
+        if proc.poll() is not None:
+            return True
+        sleep_fn(poll_interval)
+        elapsed += poll_interval
+        idle += poll_interval
+        current = _token(last)
+        if current != last:
+            last = current
+            idle = 0.0
+    return proc.poll() is not None
+
+
 def shutdown_sequence(
     proc: subprocess.Popen,
     graceful_signal: Optional[int] = None,
@@ -152,6 +200,8 @@ def shutdown_sequence(
     terminate_timeout: float = TERMINATE_TIMEOUT_SECONDS,
     sleep_fn=time.sleep,
     poll_interval: float = 0.2,
+    progress_fn=None,
+    max_graceful_seconds: float = MAX_GRACEFUL_SECONDS,
 ) -> str:
     """Encerra `proc` com escalonamento: sinal gracioso -> terminate() -> kill().
 
@@ -159,9 +209,11 @@ def shutdown_sequence(
     isso mata o processo na hora (sem entregar sinal nenhum), descartando o
     bloco de audio que ainda estava no buffer e pulando a finalizacao do
     markdown. Essa funcao so escala pro proximo estagio se o anterior nao
-    surtir efeito dentro do timeout, dando tempo real pra fila de whisper
-    pendente ser drenada. Retorna qual estagio encerrou o processo
-    ("graceful", "terminate" ou "kill") — usado em log e em testes.
+    surtir efeito: `graceful_timeout` e a janela sem progresso (reiniciada
+    sempre que `progress_fn` mudar) e `max_graceful_seconds` o teto
+    absoluto, dando tempo real pra fila de whisper pendente ser drenada.
+    Retorna qual estagio encerrou o processo ("graceful", "terminate" ou
+    "kill") — usado em log e em testes.
     """
     graceful_signal = graceful_signal if graceful_signal is not None else _graceful_signal_for_platform()
 
@@ -169,7 +221,7 @@ def shutdown_sequence(
         proc.send_signal(graceful_signal)
     except Exception:
         logger.exception("Falha ao enviar sinal de parada graciosa")
-    if _wait_until_dead(proc, graceful_timeout, sleep_fn, poll_interval):
+    if _wait_for_graceful_exit(proc, graceful_timeout, max_graceful_seconds, progress_fn, sleep_fn, poll_interval):
         return "graceful"
 
     logger.warning("Processo nao parou graciosamente em %.0fs; usando terminate().", graceful_timeout)
@@ -664,6 +716,8 @@ def stop_transcriber() -> "tuple[bool, str]":
     with state_lock:
         proc = state["proc"]
         already_stopping = state["stopping"]
+        meeting_dir = state["meeting_dir"]
+        chunk_seconds = state["chunk_seconds"]
         if proc is not None and not already_stopping:
             state["stopping"] = True
     if proc is None:
@@ -672,8 +726,32 @@ def stop_transcriber() -> "tuple[bool, str]":
         return False, "Ja estamos finalizando esta gravacao, aguarde."
 
     _log("[painel] parando... aguardando a finalizacao do bloco atual (pode levar ate alguns minutos).")
-    threading.Thread(target=shutdown_sequence, args=(proc,), daemon=True).start()
+    threading.Thread(
+        target=shutdown_sequence,
+        args=(proc,),
+        kwargs={
+            # a janela sem progresso precisa caber a transcricao de UM bloco
+            # (RTF <= 1: se o Whisper nao acompanhasse o tempo real, a fila
+            # ja teria crescido durante a propria gravacao)
+            "graceful_timeout": max(GRACEFUL_TIMEOUT_SECONDS, float(chunk_seconds or 0)),
+            "progress_fn": (lambda: _session_progress_token(meeting_dir)) if meeting_dir else None,
+        },
+        daemon=True,
+    ).start()
     return True, "Parando a gravacao (encerramento gracioso, aguarde)."
+
+
+def _session_progress_token(meeting_dir: str) -> Optional[tuple]:
+    """Muda sempre que o gravador avanca no encerramento: fecha o bloco
+    parcial (`chunk_count`), termina de transcrever um bloco
+    (`chunks_transcribed`) ou finaliza a sessao (`status`). `None` se
+    `state.json` ainda nao existe ou esta ilegivel -- nunca conta como
+    progresso."""
+    try:
+        session_state = json.loads((Path(meeting_dir) / "state.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return (session_state.get("status"), session_state.get("chunk_count"), session_state.get("chunks_transcribed"))
 
 
 def resume_meeting(meeting_id: str) -> "tuple[bool, str]":

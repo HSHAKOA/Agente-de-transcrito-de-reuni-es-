@@ -150,10 +150,23 @@ cli.run() esvazia a fila, chama writer.finalize() e session.mark_completed()
 processo termina sozinho (exit code 0)
 ```
 
-Se o processo nao terminar sozinho dentro de `GRACEFUL_TIMEOUT_SECONDS` (30s,
-tempo pra fila de whisper pendente ser drenada), `shutdown_sequence` escala
-para `proc.terminate()`, e so como ultimo recurso (mais `TERMINATE_TIMEOUT_
-SECONDS`, 5s) para `proc.kill()`.
+Ao receber o sinal, o gravador grava o bloco parcial e **ainda transcreve a
+fila pendente** — um bloco de `chunk_seconds` (300 s) leva bem mais que 30 s
+no Whisper em CPU. Por isso a espera nao e um prazo fixo: `stop_transcriber`
+passa a `shutdown_sequence` uma janela **sem progresso** de
+`max(GRACEFUL_TIMEOUT_SECONDS, chunk_seconds)` que **reinicia sempre que o
+`state.json` avanca** (`_session_progress_token`: bloco parcial fechado,
+bloco transcrito, sessao finalizada), com teto absoluto de
+`MAX_GRACEFUL_SECONDS` (30 min). So se o gravador parar de avancar (ou
+estourar o teto) `shutdown_sequence` escala para `proc.terminate()` e, como
+ultimo recurso (mais `TERMINATE_TIMEOUT_SECONDS`, 5s), `proc.kill()`.
+
+Com a janela fixa de 30 s que existia antes, todo "Parar" de uma gravacao
+longa caia em `terminate()` (sobrava sempre pelo menos um bloco de 300 s na
+fila) e os ultimos blocos ficavam sem transcrever — observado numa gravacao
+real (9 de 11 blocos). Mesmo quando ainda ha `terminate()`, o painel marca a
+sessao como `interrupted` na hora (ver `docs/RECOVERY.md`), e "Reprocessar"
+completa o que faltou.
 
 ## Pasta de reunioes (local escolhido pelo usuario)
 

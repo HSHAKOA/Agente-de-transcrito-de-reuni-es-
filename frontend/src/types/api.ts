@@ -52,7 +52,8 @@ export interface MeetingSessionState {
 export interface StatusResponse {
   running: boolean;
   /** true do momento em que POST /api/stop e aceito ate o processo
-   * realmente terminar (encerramento gracioso, pode levar ate ~35s) --
+   * realmente terminar (encerramento gracioso: o gravador ainda transcreve a
+   * fila pendente, o que pode levar minutos) --
    * ver docs/API.md. Enquanto true: nao mostrar a gravacao como "parada",
    * nao permitir um novo /api/stop, mostrar feedback de "Finalizando…". */
   stopping: boolean;

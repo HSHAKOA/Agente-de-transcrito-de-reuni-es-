@@ -109,9 +109,12 @@ Resposta: `{"ok": true, "message": "Gravacao iniciada."}` (`200`) ou
 
 ### `POST /api/stop`
 
-Sem corpo. Inicia o encerramento gracioso (sinal → aguarda até 30s →
-`terminate()` → aguarda até 5s → `kill()` só como último recurso; ver
-`docs/ARCHITECTURE.md`). Resposta imediata, antes do processo
+Sem corpo. Inicia o encerramento gracioso (sinal → aguarda o gravador
+drenar a fila de transcrição → `terminate()` → aguarda até 5s → `kill()`
+só como último recurso). A espera gracioso tolera um bloco inteiro sem
+progresso (`max(30s, chunk_seconds)`) e **reinicia sempre que o gravador
+avança** (fecha o bloco parcial, transcreve um bloco, finaliza a sessão),
+com teto absoluto de 30 min; ver `docs/ARCHITECTURE.md`. Resposta imediata, antes do processo
 efetivamente terminar: `{"ok": true, "message": "Parando a gravacao
 (encerramento gracioso, aguarde)."}` (`200`), ou `{"ok": false, "message":
 "Nenhuma gravacao em andamento."}` (`409`) se nada estiver rodando.

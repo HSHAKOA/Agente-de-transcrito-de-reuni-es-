@@ -136,7 +136,8 @@ flowchart TD
     CLEARSTOP --> AUTOIMPORT[Auto-import no SQLite]
     AUTOIMPORT --> DONE2[completed / interrupted se sobrou pendência]
 
-    SIG -.timeout 30s sem resposta.-> TERM[terminate - exceção]
+    SIG -.sem progresso por um bloco inteiro ou teto de 30 min.-> TERM[terminate - exceção]
+    TERM -.sessão marcada interrupted na hora.-> RECOVER[Reprocessar pelo banner]
     TERM -.timeout 5s sem resposta.-> KILL[kill - último recurso]
 
     style TERM stroke-dasharray: 5 5
