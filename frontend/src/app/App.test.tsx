@@ -17,6 +17,7 @@ const { api } = vi.hoisted(() => ({
     getSettings: vi.fn(),
     getSchedules: vi.fn(),
     getMeetings: vi.fn(),
+    getRecovery: vi.fn(),
     getAudioDevices: vi.fn(),
     getAudioConfig: vi.fn(),
     startMeeting: vi.fn(),
@@ -53,6 +54,7 @@ describe("App - ciclo de vida da gravacao (regressao P1-1/P1-5)", () => {
     });
     api.getSchedules.mockResolvedValue({ schedules: [] });
     api.getMeetings.mockResolvedValue({ meetings: [], total: 0, limit: 5, offset: 0 });
+    api.getRecovery.mockResolvedValue({ sessions: [] });
     api.getAudioDevices.mockResolvedValue({
       inputs: [{ id: "mic-1", name: "Microfone", is_default: true }],
       outputs: [{ id: "spk-1", name: "Alto-falantes", is_default: true, loopback_supported: true }],

@@ -9,6 +9,8 @@ const { api } = vi.hoisted(() => ({
     getSettings: vi.fn(),
     getSchedules: vi.fn(),
     getMeetings: vi.fn(),
+    getRecovery: vi.fn(),
+    resumeMeeting: vi.fn(),
   },
 }));
 vi.mock("../services/api", () => ({ api }));
@@ -49,6 +51,7 @@ describe("Dashboard", () => {
       folder_dialog_available: true,
       free_bytes: 5_000_000_000,
     });
+    api.getRecovery.mockResolvedValue({ sessions: [] });
   });
 
   it("mostra estado vazio quando nao ha reunioes nem agendamentos", async () => {
@@ -155,5 +158,44 @@ describe("Dashboard", () => {
     renderDashboard(baseStatus({ running: true, stopping: true }));
 
     expect(await screen.findByText("Finalizando gravação…")).toBeInTheDocument();
+  });
+
+  it("nao chama um reprocessamento de 'Gravando agora'", async () => {
+    api.getSchedules.mockResolvedValue({ schedules: [] });
+    api.getMeetings.mockResolvedValue({ meetings: [], total: 0, limit: 5, offset: 0 });
+    renderDashboard(baseStatus({ running: true, mode: "resume" }));
+
+    expect(await screen.findByText("Reprocessando uma sessão interrompida…")).toBeInTheDocument();
+    expect(screen.queryByText(/Gravando agora/)).not.toBeInTheDocument();
+  });
+
+  it("mostra o banner de sessoes interrompidas quando o backend as lista", async () => {
+    api.getSchedules.mockResolvedValue({ schedules: [] });
+    api.getMeetings.mockResolvedValue({ meetings: [], total: 0, limit: 5, offset: 0 });
+    api.getRecovery.mockResolvedValue({
+      sessions: [
+        {
+          meeting_id: "aula-1",
+          title: "Aula de Ingles",
+          status: "interrupted",
+          created_at: "2026-09-21T19:01:55-03:00",
+          started_at: "2026-09-21T19:02:01-03:00",
+          finished_at: null,
+          chunk_count: 11,
+          chunks_recorded: 11,
+          chunks_transcribed: 9,
+          duration: 0,
+          model: "small",
+          language: "pt",
+          device: "cpu",
+          error: null,
+          chunks: [],
+        },
+      ],
+    });
+    renderDashboard();
+
+    expect(await screen.findByText("Sessões interrompidas encontradas")).toBeInTheDocument();
+    expect(screen.getByText("Aula de Ingles")).toBeInTheDocument();
   });
 });

@@ -56,6 +56,10 @@ export interface StatusResponse {
    * ver docs/API.md. Enquanto true: nao mostrar a gravacao como "parada",
    * nao permitir um novo /api/stop, mostrar feedback de "Finalizando…". */
   stopping: boolean;
+  /** O que o processo em andamento faz: "record" (gravando uma reuniao nova)
+   * ou "resume" (so retranscrevendo os blocos pendentes de uma sessao
+   * interrompida, sem gravar audio). `null` quando nada esta rodando. */
+  mode?: "record" | "resume" | null;
   output: string | null;
   chunk_seconds: number | null;
   meeting_dir: string | null;
