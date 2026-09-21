@@ -24,7 +24,7 @@ reproduzível, core estável, testes, docs e GitHub organizados.
 | Testes reproduzíveis (backend 650, frontend 79) | pronto localmente; **CI ainda não confirmado verde** |
 | CI verde (backend, build, lint, testes do frontend) | corrigido e verificado localmente; **precisa do push** |
 | Sem dados pessoais no repositório | pronto (histórico do Git conferido; `.gitignore` por assinatura) |
-| Docs alinhados com o código | pronto para o que foi tocado; ver "Documentação" abaixo |
+| Docs alinhados com o código | pronto para o que foi tocado (ARCHITECTURE, API, RECOVERY, SECURITY, DATABASE, TESTING, FLOWCHARTS); os demais `docs/<FASE>.md` não foram reauditados |
 | Templates de issue/PR, CONTRIBUTING, SECURITY | pronto |
 | **`LICENSE`** | **decisão do proprietário — pendente** |
 | **Relato privado de vulnerabilidade** | **habilitar no GitHub — pendente** |
