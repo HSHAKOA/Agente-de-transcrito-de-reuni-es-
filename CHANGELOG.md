@@ -3,6 +3,36 @@
 Resumo por fase/marco (ver `docs/ROADMAP.md` para o detalhe de escopo de
 cada uma e `git log` para o histórico completo de commits).
 
+## Retomada — CI verde, recuperação e histórico (não lançado)
+
+Reconstrução do estado real a partir de `cc9c095`, antes de implementar:
+
+- **CI**: nunca esteve verde (9/9 execuções falharam no GitHub). Causas: um
+  teste de agendamento sondava a placa de som real (o fixture não chegava ao
+  default capturado no import do `SchedulerEngine`) e mensagens de horário
+  usavam o fuso do PC em vez do fuso do agendamento. Corrigido, e o CI passa a
+  rodar também `npm test`.
+- **Recuperação**: uma sessão cujo processo morre sem finalizar é marcada
+  `interrupted` na hora (antes só no boot do painel); o React ganhou o banner
+  "Sessões interrompidas" com **Reprocessar**, que só existia no painel
+  legado. `/api/status` ganhou `mode` (`record`/`resume`).
+- **Encerramento**: a espera gracioso deixou de ser uma janela fixa de 30 s —
+  um bloco de 300 s na fila do Whisper fazia todo "Parar" de gravação longa
+  cair em `terminate()`. Agora acompanha o progresso do gravador
+  (`max(30 s, chunk_seconds)`, reinicia a cada avanço, teto de 30 min).
+- **Histórico**: `GET /api/meetings` combina busca, status e período
+  (`date_from`/`date_to`, dias inclusivos), pagina também a busca e devolve um
+  `total` consistente; data malformada responde `400`. O filtro de data
+  antigo excluía o último dia inteiro. Nova tela **Histórico** no React.
+- **Testes**: backend 608 → 648; frontend 26 → 79 (Recording, Schedules,
+  Settings, History, RecoveryBanner). Testes de agendamento agora herméticos.
+- **Segurança e higiene**: pastas de reunião ignoradas pelo Git em qualquer
+  profundidade; testes deixaram de vazar reuniões-fantasma para o banco real;
+  `docs/SECURITY.md` atualizado; templates de issue/PR.
+- **Docs**: `ARCHITECTURE.md` reescrito (parava na Fase B), projeto do
+  Meeting Intelligence (`docs/INTELLIGENCE.md`), plano de migração dos
+  agendamentos, banner "Prévia (Fase F)" removido da interface.
+
 ## Correção pós-auditoria (React pronto para demo)
 
 Uma auditoria independente encontrou 5 problemas P1 que impediam uma

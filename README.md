@@ -36,8 +36,10 @@ manter um **histórico pesquisável** de tudo que já foi gravado.
   Encerramento sempre gracioso (nunca `kill` direto): o bloco em
   andamento termina de ser escrito antes do processo fechar.
 - **Recuperação automática**: se o processo morrer no meio (queda de
-  energia, crash), o painel detecta sozinho na próxima abertura e oferece
-  reprocessar os blocos pendentes, sem apagar nada.
+  energia, crash, encerramento que estourou o prazo), a sessão é marcada
+  como interrompida na hora — ou na próxima abertura, se foi o computador
+  que caiu — e o Dashboard oferece **Reprocessar** os blocos pendentes, sem
+  apagar nada.
 - **Agendamento**: uma reunião recorrente ("toda segunda 19h-20h40")
   dispara início/fim automáticos, com checagem prévia de pasta/
   dispositivo (preflight) e tratamento explícito de "esqueci de abrir o
@@ -169,15 +171,19 @@ ao vivo, etc.).
 
 ```bash
 pip install pytest
-pytest
+pytest                                     # backend
+
+cd frontend && npm ci
+npm run build && npx oxlint && npm test    # frontend
 ```
 
-Mais de 600 testes, majoritariamente com dublês (fakes) de hardware de
-áudio, relógio e Whisper — não exigem microfone, placa de som real, nem
-baixar nenhum modelo. Um subconjunto separado (`test_*_hardware.py`) usa
-hardware de áudio real quando disponível e é pulado automaticamente
-quando não há dispositivo de áudio no ambiente (ex.: CI). Ver
-`docs/TESTING.md` para a estratégia completa.
+Cerca de 650 testes de backend, majoritariamente com dublês (fakes) de
+hardware de áudio, relógio e Whisper — não exigem microfone, placa de som
+real, nem baixar nenhum modelo — e cerca de 80 testes de componente no
+frontend. Um subconjunto separado (`test_*_hardware.py`) usa hardware de
+áudio real quando disponível e é pulado automaticamente quando não há
+dispositivo de áudio no ambiente (ex.: CI). Ver `docs/TESTING.md` para a
+estratégia completa.
 
 ## Privacidade
 
@@ -224,7 +230,7 @@ docs/                    # arquitetura, API, fases, segurança, pendências
 | C.1 — Agendamento de gravações | Concluída, com telas no React (não inicia com o app fechado) |
 | D — Transcrição quase em tempo real | Núcleo concluído |
 | E — SQLite + histórico | Escopo reduzido, funcional. Indexação **automática** ao final de toda gravação (antes era manual via endpoint, nunca chamado pela UI) |
-| F — Frontend React | Interface **ativa e padrão**, servida por `webui.py`. 7 telas reais (Dashboard, Nova Reunião, Gravação, Detalhe, Agendamentos, Configurações), navegação corrigida (não ejeta mais da tela de Gravação), estado "Finalizando..." explícito ao parar, testes automatizados (vitest). Falta: Histórico paginado |
+| F — Frontend React | Interface **ativa e padrão**, servida por `webui.py`. 8 telas reais (Dashboard, Histórico paginado com busca/filtros, Nova Reunião, Gravação, Detalhe, Agendamentos + formulário, Configurações) e banner de recuperação com "Reprocessar". Cada tela tem teste (vitest, 79 no total). Falta: uma auditoria de acessibilidade |
 | G — Inteligência (resumo/tarefas/decisões) | Não iniciada |
 | H — Diarização | Versão leve: rótulo por reunião conforme a captura (na captura simultânea, tudo é "Reunião"); sem atribuição por segmento nem por voz |
 | I — Exportações | Markdown/TXT/JSON/SRT/VTT concluídos; DOCX/PDF/instalador não |

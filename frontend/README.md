@@ -39,11 +39,13 @@ src/
   test/setup.ts         `@testing-library/jest-dom` carregado pro vitest
 ```
 
-## As 7 telas
+## As 8 telas e o banner de recuperação
 
-1. **Dashboard** — status de conexão, próxima gravação agendada com
-   contagem regressiva, busca + 5 reuniões recentes, pasta ativa e
-   espaço livre.
+1. **Dashboard** — status de conexão, **banner de sessões interrompidas**
+   (com "Reprocessar"), próxima gravação agendada com contagem regressiva,
+   busca rápida + 5 reuniões recentes, pasta ativa e espaço livre.
+   Durante um reprocessamento o banner diz "Reprocessando…", não
+   "Gravando agora" (`status.mode`).
 2. **Nova reunião** — escolher pasta (diálogo nativo ou caminho manual),
    modelo Whisper, idioma, dispositivo (CPU/CUDA), fontes de áudio com
    "Testar áudio" de verdade, inicia uma gravação real.
@@ -51,7 +53,8 @@ src/
    (ambos via SSE), cronômetro, parar. Mostra "Finalizando reunião..."
    enquanto o backend está no encerramento gracioso (`status.stopping`)
    — nunca assume que a gravação parou só porque `POST /api/stop`
-   respondeu 200.
+   respondeu 200. Em um reprocessamento (`status.mode == "resume"`) mostra
+   "REPROCESSANDO", sem medidores nem transcrição ao vivo (nada é capturado).
 4. **Detalhe da reunião** — metadados, transcrição completa com
    timecodes/speaker, exportação em 5 formatos, abas de
    Resumo/Tarefas/Decisões marcadas honestamente como "não processado"
@@ -64,8 +67,13 @@ src/
    backend só aceita 1 dia para recorrência semanal).
 7. **Configurações** — pasta de reuniões, preferências de dispositivo de
    áudio, aviso de espaço em disco.
+8. **Histórico** — busca por título/transcrição (com espera de 300 ms entre
+   teclas), filtro de status, período (De/Até) e paginação de 20 em 20 com
+   "Mostrando 21–40 de N". Mudar um filtro volta à primeira página; uma
+   resposta lenta e antiga nunca sobrescreve a mais nova; período invertido
+   avisa em vez de consultar.
 
-O ciclo completo **criar → gravar → ver → exportar → agendar** é
+O ciclo completo **criar → gravar → ver → exportar → agendar → recuperar** é
 navegável inteiramente aqui, contra o backend real.
 
 ## Rodando
@@ -90,8 +98,8 @@ backend continua servindo o build antigo.
 ## Testes
 
 `vitest` + `@testing-library/react` + `jest-dom` + `user-event`, ambiente
-`jsdom`. Cobertura atual (ver `docs/PENDENCIAS.md` para o que ainda
-falta):
+`jsdom`, com o `api` mockado (comportamento da interface, não do backend).
+**79 testes em 11 arquivos**, um por tela mais os hooks críticos:
 
 - **App**: o ciclo de vida completo de uma gravação — idle → nova
   reunião → iniciando → gravando → parar → finalizando → idle — incluindo
@@ -101,22 +109,28 @@ falta):
   medidores de áudio e da transcrição ao vivo (conexão, parsing,
   reconexão, evento malformado, cleanup) — via um `EventSource` falso,
   já que `jsdom` não implementa isso nativamente.
-- **NewMeeting**: payload correto por combinação de fontes de áudio,
-  botão desabilitado sem nenhuma fonte selecionada, erro do backend
-  exibido, "Testar áudio".
-- **ScheduleForm**: recorrência semanal (1 dia), troca automática pra
-  "dias específicos" ao marcar um 2º dia, validação de título/pasta
-  obrigatórios.
 - **Dashboard**: estado vazio, lista de reuniões recentes, busca, banner
-  de gravando/finalizando.
-- **MeetingDetail**: transcrição com timecodes, os 5 links de
-  exportação, abas de Intelligence como "não processado", erro quando a
-  reunião não está no índice.
+  de gravando/finalizando/reprocessando, "Ver histórico completo".
+- **RecoveryBanner**: lista com progresso de blocos, Reprocessar com o id
+  certo, recusa do backend como alerta, falha de rede, botão desabilitado
+  durante uma gravação.
+- **History**: primeira página e total, Próxima/Anterior e as bordas, filtro
+  volta à página 1, busca + período nos parâmetros certos, período invertido,
+  estado vazio com/sem filtros, erro + "Tentar novamente", resposta fora de
+  ordem descartada.
+- **Recording**: cronômetro ancorado no servidor, níveis ("sem sinal"),
+  segmentos provisórios × definitivos, backlog `BEHIND`, um único pedido de
+  parar com trava de duplo clique, recusa/erro de rede reabilitando o botão,
+  `stopping` vindo do backend, e o modo reprocessamento.
+- **Schedules**: ações por status (pendente / perdida / falhou / gravando),
+  cancelar/iniciar agora/ignorar com o id certo, recusa do backend exibida.
+- **Settings**: diálogo nativo, caminho manual (e o vazio nunca é enviado),
+  recusas, salvar fontes padrão e o erro de rede.
+- **NewMeeting**, **ScheduleForm**, **MeetingDetail**: como antes.
 
-Não cobertos ainda por teste automatizado: Recording.tsx isolado (a
-lógica de stopping dele é exercida indiretamente pelo teste de App, mas
-não há um teste dedicado ao componente); Schedules.tsx (lista/ações);
-Settings.tsx.
+Não coberto: acessibilidade além do básico (ver `docs/PENDENCIAS.md`) e os
+formulários de escrita numa aba de navegador real (só via testes com backend
+mockado e o smoke test HTTP).
 
 ## Integração com o backend
 

@@ -128,3 +128,65 @@ esquecimento.
 ### Próxima tarefa
 
 Ver `docs/HANDOFF_PROXIMA_SESSAO.md`.
+
+---
+
+## Checkpoint 3 — Retomada (auditoria de estado + correções)
+
+Sessão que partiu de `cc9c095` (Git limpo e sincronizado com `origin`) para
+reconstruir o estado real antes de implementar. Nenhum documento anterior
+registrava o estado do CI, e a verificação mostrou que o **CI do GitHub nunca
+esteve verde** (9/9 execuções falharam). Detalhe dos achados e das provas em
+`docs/HANDOFF_PROXIMA_SESSAO.md`; pendências em `docs/PENDENCIAS.md`.
+
+### Baseline medido antes de mexer em código
+
+| Verificação | Resultado |
+|---|---|
+| `pytest -q` | 608 passed, 4 warnings (`SoundcardRuntimeWarning`: 4 testes tocavam a placa de som real) |
+| `npm test` | 26 passed em 6 arquivos (a 1ª tentativa estourou o timeout dos workers por rodar junto com o pytest; isolado passou) |
+| `npm run build` | ok |
+| `npx oxlint` | 0 erros, 5 avisos `set-state-in-effect` |
+| CI remoto (`gh run list`) | **9 de 9 `failure`** (4 testes no runner Windows) |
+
+### Depois
+
+| Verificação | Resultado |
+|---|---|
+| `pytest -q` (fuso normal **e** `TZ=UTC0`) | **648 passed**, 0 warnings de hardware nos testes não-hardware |
+| `npm test` | **79 passed em 11 arquivos** |
+| `npm run build` / `npx oxlint` | ok / 0 erros, os mesmos 5 avisos |
+| CI remoto | **não verificado** — nenhum commit foi enviado |
+
+### Matriz de estado
+
+| Área | Estado | Testado | Observação |
+|---|---|---|---|
+| Storage (pastas, sessões, settings) | PRONTO | sim | layout `chunks/` (uma fonte) ou `audio/{system,microphone,mixed}/` (simultânea) |
+| Audio | PRONTO | dublês + `*_hardware.py` | não revalidado com hardware nesta sessão |
+| Recovery | PRONTO | sim | marca imediata + banner no React; **nunca com uma gravação longa real desde a correção** |
+| Scheduler | PRONTO (em JSON) | sim | só dispara com o painel aberto; mensagens agora no fuso do agendamento |
+| Transcription | PRONTO | sim | encerramento gracioso ciente de progresso |
+| Live transcription | PRONTO (núcleo) | sim | dedup lexical; limites de backlog fixos |
+| SQLite | PRONTO (escopo reduzido) | sim | só `meetings`, `meeting_segments`, `search_index`, `schema_version`; sem tabelas de análise |
+| History | PRONTO | sim (repositório, API, tela) | 3 reuniões-fantasma no banco real (ver P2-12) |
+| Search | PRONTO | sim | FTS5 com fallback `LIKE` escapado; paginada e combinável |
+| React | PRONTO | 79 testes | 8 telas + banner; acessibilidade PARCIAL |
+| Intelligence (G) | AUSENTE | — | projeto em `docs/INTELLIGENCE.md` |
+| Speakers (H) | PARCIAL | sim | rótulo por reunião, não por segmento |
+| Exports | PARCIAL | sim | md/txt/json/srt/vtt; sem DOCX/PDF |
+| Packaging | AUSENTE | — | `iniciar.bat`; `frontend/dist/` não versionado |
+| Tests | PRONTO | 648 + 79 | hermeticidade verificada (`TZ=UTC0`, sondas de áudio proibidas) |
+| Security | PRONTO para o modelo local | sim | ver `docs/SECURITY.md`; sem autenticação (aceito) |
+| Documentation | PRONTO para o tocado | — | `ARCHITECTURE.md` reescrito; ver P1 do handoff |
+
+### Decisão consciente não tomada
+
+Nenhum `git push`: publicar em `origin/main` não estava autorizado
+explicitamente. Nenhum `LICENSE`, `CODE_OF_CONDUCT.md` ou contato de segurança
+foi criado: são decisões do proprietário. Nada nas pastas de reunião reais foi
+modificado.
+
+### Próxima tarefa
+
+Ver `docs/HANDOFF_PROXIMA_SESSAO.md`.

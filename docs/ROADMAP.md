@@ -64,15 +64,18 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
       serve `frontend/dist/` automaticamente (correção pós-auditoria P1-3;
       antes só existia o painel legado). Bug de navegação que ejetava o
       usuário da tela de Gravação (P1-1) corrigido com um estado de
-      transição explícito, sem timeout arbitrário. Testes automatizados de
-      componente adicionados (vitest + testing-library), cobrindo o ciclo
-      de vida completo da gravação e os formulários críticos. Falta pra
-      paridade completa: tela de Histórico dedicada com paginação, e
-      exercitar os formulários de escrita contra um navegador real (feito
-      via HTTP simulado/smoke test, nunca clicado numa aba real). `index.html`
-      continua existindo só como fallback quando o build não foi gerado —
-      ver `docs/PENDENCIAS.md`.
-- [ ] **Fase G — Inteligência.** Não implementada. Arquitetura plugável
+      transição explícito, sem timeout arbitrário. **Retomada:** tela de
+      **Histórico** dedicada (busca, status, período, paginação), **banner de
+      recuperação** com "Reprocessar" (o painel legado tinha, o React não) e a
+      tela de Gravação diferencia um reprocessamento de uma gravação. Cada
+      uma das telas tem teste de componente (vitest + testing-library; 79
+      testes). Falta: exercitar os formulários de escrita contra um navegador
+      real (feito via HTTP simulado/smoke test, nunca clicado numa aba real)
+      e uma auditoria de acessibilidade. `index.html` continua existindo só
+      como fallback quando o build não foi gerado — ver `docs/PENDENCIAS.md`.
+- [ ] **Fase G — Inteligência.** Não implementada; **projeto em
+      `docs/INTELLIGENCE.md`** (provider plugável, validador contra
+      alucinação, modelo de dados, fatias G.1–G.4). Arquitetura plugável
       (provider de resumo/decisões/tarefas/tópicos, Ollama/OpenAI/
       Anthropic/Gemini opcionais) fica documentada como próximo passo, não
       código — ver `docs/PENDENCIAS.md`.
@@ -104,12 +107,30 @@ guardar e pesquisar historico, gerar resumo/tarefas/decisoes, exportar —
 tudo local, sem servico pago obrigatorio, sem depender de internet pro uso
 normal. A interface React (Fase F) substituiu o painel HTML legado como
 interface ativa e padrão depois de demonstrar paridade funcional completa
-(7 telas navegáveis de ponta a ponta contra o backend real, servidas pelo
-próprio `webui.py`) — o painel legado continua existindo só como fallback
-automático, nenhum recurso desapareceu na migração.
+(8 telas navegáveis de ponta a ponta contra o backend real, servidas pelo
+próprio `webui.py`, mais o banner de recuperação) — o painel legado continua
+existindo só como fallback automático, nenhum recurso desapareceu na migração.
 
 **Estado real (ver `docs/PENDENCIAS.md` para o detalhe completo):** tudo
 acima está feito, exceto "gerar resumo/tarefas/decisões" (Fase G, não
-implementada). A interface React está completa e ativa; falta só uma tela
-de Histórico dedicada com paginação para paridade 100% com o que o
-backend já suporta.
+implementada; projeto em `docs/INTELLIGENCE.md`). A interface React está
+completa e ativa, com histórico paginado e recuperação de sessões
+interrompidas.
+
+## Marcos de versão
+
+```text
+V0.9 — Academic Demo                                        ✅ core funcional
+V1.0 — Open Source Stable                                   ⏳ falta só decisões do proprietário + CI verde confirmado
+      histórico ✅ · testes ✅ · estrutura open source ✅ · instalação reproduzível ⏳ · estabilidade ✅
+V1.1 — Meeting Intelligence      resumo, tarefas, decisões, tópicos      (docs/INTELLIGENCE.md)
+V1.2 — Speakers                  atribuição por segmento; diarização opcional
+V1.3 — Automação                 Windows Task Scheduler; integração com calendários (ICS/Google/Outlook)
+V2.0 — Knowledge Base            busca semântica; chat com uma reunião / entre reuniões
+```
+
+O que ainda separa o estado atual da V1.0 está em `docs/PENDENCIAS.md`
+("O que separa o estado atual da V1.0"): confirmar o CI verde após o push,
+validar o encerramento/reprocessamento com uma gravação longa real, e as
+decisões do proprietário (licença, relato privado de vulnerabilidade).
+Nada de V1.1+ entra antes disso.

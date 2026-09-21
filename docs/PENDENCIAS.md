@@ -1,125 +1,131 @@
 # Pendências
 
-Priorização honesta do que falta, ao final desta sessão. Nada aqui foi
-escondido: cada item também aparece na fase correspondente
-(`docs/ROADMAP.md`) e no relatório final da missão. Também
-acompanhadas como [Issues no GitHub](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues)
+Priorização honesta do que falta. Nada aqui foi escondido: cada item também
+aparece na fase correspondente (`docs/ROADMAP.md`). Também acompanhadas como
+[Issues no GitHub](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues)
 (agrupadas, não uma por item):
 
-- [#1](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/1) — Telas de produto React (P1) — **fechada**: as 5 falhas P1 da auditoria pós-missão foram corrigidas; resta só Histórico paginado (ver abaixo)
+- [#1](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/1) — Telas de produto React (P1) — **fechada**
 - [#2](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/2) — Migração de schedules + Task Scheduler (P1)
 - [#3](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/3) — Meeting Intelligence (P2)
 - [#4](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/4) — Diarização completa + empacotamento (P2)
 - [#5](https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/issues/5) — DOCX/PDF + polimento (P2/P3)
 
+## O que separa o estado atual da V1.0
+
+A V1.0 ("Open Source Stable") não é ter todas as features: é produto
+reproduzível, core estável, testes, docs e GitHub organizados.
+
+| Critério | Estado |
+|---|---|
+| Core estável (áudio, transcrição, recovery, agendador, SQLite) | pronto, com a ressalva da validação real abaixo |
+| React funcional, 8 telas + recuperação, cada uma testada | pronto |
+| Histórico dedicado (busca, status, período, paginação) | pronto |
+| Testes reproduzíveis (backend 648, frontend 79) | pronto localmente; **CI ainda não confirmado verde** |
+| CI verde (backend, build, lint, testes do frontend) | corrigido e verificado localmente; **precisa do push** |
+| Sem dados pessoais no repositório | pronto (histórico do Git conferido; `.gitignore` por assinatura) |
+| Docs alinhados com o código | pronto para o que foi tocado; ver "Documentação" abaixo |
+| Templates de issue/PR, CONTRIBUTING, SECURITY | pronto |
+| **`LICENSE`** | **decisão do proprietário — pendente** |
+| **Relato privado de vulnerabilidade** | **habilitar no GitHub — pendente** |
+| Instalação reproduzível num clone limpo | parcial: `frontend/dist/` não é versionado (ver P2) |
+
 ## P0 — bloqueiam uma demonstração completa
 
-Nenhuma pendência P0 identificada. O fluxo principal (gravar sistema+
-microfone, transcrever ao vivo e de forma durável, recuperar sessão
-interrompida, agendar, buscar histórico, exportar) funciona de ponta a
-ponta e está testado.
+Nenhuma. O fluxo principal (gravar, transcrever ao vivo e de forma durável,
+parar, recuperar, agendar, buscar, exportar) funciona e está testado.
 
-## P1 — reduzem a experiência ou a superfície de produto
+## P1 — valem antes de chamar de V1.0
 
-Uma auditoria independente pós-missão (`auditoria_gemini.md`) encontrou 5
-problemas P1 reais que impediam considerar o produto pronto pra demo,
-todos confirmados no código e corrigidos numa sessão dedicada:
+1. **Confirmar o CI verde depois do push.** O CI nunca esteve verde (9/9 runs
+   falharam). Foram corrigidas as 4 causas e a suíte roda igual sob `TZ=UTC0`
+   e com sondas de áudio reais proibidas — mas isso só é prova local. O job de
+   frontend (Ubuntu, Node 22) passou a rodar `npm test` e não foi exercitado
+   fora do Windows.
+2. **Validar com hardware real o que mudou no encerramento e no
+   reprocessamento.** Espera ciente de progresso, marca imediata de
+   `interrupted` e "Reprocessar" pelo React só rodaram com dublês e HTTP
+   simulado. Uma gravação longa real (≥ 15 min) parada pelo painel deve
+   terminar em `completed`.
+3. **Reunião real de 21/09 aguardando Reprocessar** (9/11 blocos; áudio
+   íntegro) — ver `docs/HANDOFF_PROXIMA_SESSAO.md`.
+4. **Speaker por segmento.** Hoje o rótulo é por reunião; na captura
+   simultânea tudo vira "Reunião". O áudio por canal já é guardado
+   (`audio/microphone/`, `audio/system/`), então dá para atribuir cada
+   segmento ao canal dominante (energia RMS na janela) sem regravar e sem
+   diarização por voz. Só funciona com `keep_audio` ligado.
+5. **Migrar `schedules.json` para SQLite** — plano pronto em
+   `docs/DATABASE.md`. Sem urgência (o agendador funciona em JSON); vale
+   quando algo precisar consultar agendamentos junto com reuniões.
+6. **Windows Task Scheduler (Nível 2 do agendamento).** Um agendamento só
+   dispara com o painel aberto. Não prometer antes de validar "acordar o
+   computador" nesta máquina.
 
-1. ~~Bug de navegação ejetava o usuário da tela de Gravação~~ **CORRIGIDO**
-   — `App.tsx` checava `status.running` do poll ANTERIOR no mesmo render
-   em que `NewMeeting` mudava a view, voltando pro Dashboard antes do
-   status novo chegar. Corrigido com um estado de transição explícito
-   (`recording.phase: "starting" | "active"`), sem timeout arbitrário.
-2. ~~Reuniões terminadas nunca eram indexadas no SQLite~~ **CORRIGIDO**
-   — `_reader_thread` agora chama `import_meeting` automaticamente
-   quando o processo de gravação termina; antes disso o histórico só
-   era populado se alguém chamasse `POST /api/meetings/import`
-   manualmente, o que nenhuma tela fazia.
-3. ~~`webui.py` não servia o build do React~~ **CORRIGIDO** — React é
-   agora a interface ativa e padrão, servida direto por `webui.py`
-   quando `frontend/dist/` existe (fallback SPA pra rotas client-side,
-   nunca intercepta `/api/*`). `index.html` legado só é servido se o
-   build não existir.
-4. ~~Leituras do SQLite sem lock~~ **CORRIGIDO** — só escritas eram
-   protegidas; leituras concorrentes na mesma conexão compartilhada
-   causavam `sqlite3.InterfaceError` sob carga real (reproduzido antes
-   de corrigir). Agora toda operação do `MeetingRepository` é
-   serializada.
-5. ~~Duplo clique em "Parar" podia disparar shutdown concorrente~~
-   **CORRIGIDO** — `state["stopping"]` explícito recusa (409) um
-   segundo `POST /api/stop` enquanto o primeiro ainda está em
-   andamento; o React mostra "Finalizando reunião..." em vez de
-   assumir que a gravação parou assim que o endpoint responde 200.
+### Corrigido pela retomada (histórico)
 
-**Ainda falta pra "paridade funcional completa" de verdade** (Fase F):
-uma tela de Histórico dedicada com paginação (hoje só a busca + últimas
-5 reuniões do Dashboard); cobertura de teste automatizado mais ampla no
-frontend (vitest cobre o ciclo de vida da gravação, formulários
-críticos e o hook de SSE — não cobre ainda `Schedules.tsx`/
-`Settings.tsx`/`Recording.tsx` isoladamente); exercitar os formulários
-de escrita (Nova Reunião, agendamento) clicando de verdade num navegador
-contra o backend real — verificado por testes automatizados (vitest com
-backend mockado, e um smoke test HTTP end-to-end com o servidor real e
-um subprocesso de gravação simulado), nunca clicando manualmente numa
-aba de navegador aberta pra essa finalidade nesta sessão.
+CI vermelho (teste tocando a placa de som real; mensagens no fuso do PC);
+sessão morta ficava `processing`; React sem banner de recuperação; **todo
+"Parar" de gravação longa caía em `terminate()`**; busca sem paginação e
+filtro de data que excluía o dia inteiro; testes vazando reuniões-fantasma
+para o banco real; pastas de reunião fora do `.gitignore`; docs defasados e
+o banner "Prévia (Fase F)" em toda tela. Detalhe e evidências em
+`docs/HANDOFF_PROXIMA_SESSAO.md`.
 
-6. **Migração de `schedules.json` para SQLite**
-   - Impacto: nenhum na prática (o scheduler funciona corretamente em
-     JSON), mas duas fontes de persistência coexistem.
-   - Próximo passo: quando o schema SQLite crescer para incluir
-     `SCHEDULE`/`SCHEDULE_RUN` (ver `docs/FLOWCHARTS.md`, diagrama 6),
-     migrar com o mesmo padrão de `storage/import_filesystem.py`
-     (idempotente, nunca apaga o JSON até a migração ser confirmada).
+## P2 — features avançadas e polimento
 
-7. **Windows Task Scheduler (Nível 2 do agendamento)**
-   - Impacto: um agendamento só dispara se o painel já estiver aberto no
-     horário. Documentado explicitamente em `docs/SCHEDULING.md`, nunca
-     escondido.
-   - Próximo passo: investigar `schtasks`/API do Task Scheduler para
-     iniciar `webui.py` alguns minutos antes de um agendamento — só
-     depois de validar `Wake the computer to run this task` de verdade
-     nesta máquina/empacotamento (nunca prometer sem testar).
-
-## P2 — features avançadas não iniciadas
-
-8. **Meeting Intelligence (Fase G)** — resumo/tarefas/decisões/tópicos.
-   Nenhum código escrito; arquitetura de provider plugável documentada
-   em `docs/FLOWCHARTS.md` (diagrama 9).
-9. **Diarização completa (Fase H)** — hoje só rótulo por canal (`Você`/
-   `Áudio da reunião`), nunca por voz individual dentro do mesmo canal.
-10. **Empacotamento Windows (PyInstaller/Nuitka)** — `iniciar.bat`
-    continua sendo o fluxo real e funcional; um `.exe` de um clique não
-    foi avaliado.
-11. **DOCX/PDF** — só Markdown/TXT/JSON/SRT/VTT foram implementados.
+7. **Meeting Intelligence (Fase G)** — projeto revisável em
+   `docs/INTELLIGENCE.md` (provider plugável, validador anti-alucinação,
+   modelo de dados). Nenhum código escrito.
+8. **Diarização por voz (Fase H completa).**
+9. **Empacotamento Windows** (PyInstaller/Nuitka) — `iniciar.bat` continua
+   sendo o fluxo real. Junto vai o problema de `frontend/dist/` não ser
+   versionado: um clone limpo mostra o painel legado até rodar
+   `npm run build` (documentado em `docs/APRESENTACAO_PROFESSOR.md`).
+10. **DOCX/PDF** — só Markdown/TXT/JSON/SRT/VTT existem.
+11. **Acessibilidade** — só o Histórico e o banner de recuperação têm
+    `aria-*`/`role` sistemáticos; Dashboard, Nova Reunião, Gravação,
+    Agendamentos e Configurações não foram auditados (teclado, foco,
+    contraste, leitores de tela).
+12. **Reuniões-fantasma no `data/meetings.db` real.** Três linhas
+    (`20260101-000000-ffffff`, `-222222`, `-333333`) apontam para pastas
+    temporárias do pytest de 15/09. O vazamento foi corrigido na fixture, mas
+    as linhas ficaram e aparecem no Histórico como "Interrompida"/"Gravando".
+    Limpeza segura (soft delete, não toca em arquivo):
+    `POST /api/meetings/<id>/delete` para cada um. Melhoria de produto: a
+    importação poderia marcar como removidas as linhas cuja pasta não existe
+    mais.
+13. **Avisos de depreciação do Node 20 nas Actions** (`actions/checkout@v4`,
+    `setup-python@v5`, `setup-node@v4`) — só avisos; atualizar as versões.
 
 ## P3 — polimento
 
-12. Sem endpoint de "restaurar" uma reunião soft-deletada (precisa ir
-    direto ao repositório hoje).
-13. `merge_overlapping_text` (Fase D) é lexical, não semântico — uma
-    reformulação da IA entre janelas adjacentes não seria detectada como
-    duplicata (caso raro na prática).
-14. Backlog de transcrição ao vivo (`LIVE`/`PROCESSING`/`BEHIND`) usa
-    limites fixos (1s/30s), não adaptativos ao hardware da máquina.
-15. Sem teste de fluxo completo (SSE) automatizado para reconexão de
-    cliente no meio de uma gravação — coberto só pelo tratamento de
-    exceção no servidor (`BrokenPipeError`/etc.), não por um teste
-    dedicado de reconexão.
-16. `frontend/dist/` não é versionado (`.gitignore`) -- um checkout novo
-    do repositório precisa rodar `cd frontend && npm run build` uma vez
-    antes de `iniciar.bat` mostrar o React (senão cai pro painel legado,
-    que continua funcional). Documentado em `docs/APRESENTACAO_PROFESSOR.md`.
+14. Sem endpoint para "restaurar" uma reunião excluída (soft delete).
+15. `merge_overlapping_text` (Fase D) é lexical, não semântico.
+16. Os limites do backlog ao vivo (`LIVE`/`PROCESSING`/`BEHIND`: 1 s / 30 s)
+    são fixos, não adaptativos ao hardware.
+17. Sem teste automatizado de reconexão do SSE no meio de uma gravação.
+18. O `vitest` estoura o timeout de início de workers se rodar junto com o
+    `pytest` (CPU saturada) — rode em sequência.
+19. O fim de cada segmento importado de um `.md` é aproximado pelo início do
+    próximo (o último fica com duração zero; SRT/VTT já aplicam o mínimo de
+    0,5 s — limitação documentada em `docs/DATABASE.md`).
 
-## Licença
+## Licença e decisões do proprietário
 
-Repositório sem `LICENSE` — decisão do proprietário, não tomada nesta
-sessão de propósito (a missão explicitamente proíbe escolher uma licença
-jurídica em nome de quem não decidiu isso). Pendência registrada aqui,
-não um arquivo criado por suposição.
+Sem `LICENSE`: a missão proíbe escolher uma licença jurídica em nome de quem
+não decidiu isso. Sem ela, o código é "todos os direitos reservados" — para
+um projeto que será portfólio/open source, é a primeira decisão da V1.0
+(MIT e Apache-2.0 são as escolhas usuais; a diferença relevante é a
+concessão explícita de patentes da Apache). Também dependem do proprietário:
+habilitar *Private vulnerability reporting* no GitHub e, se quiser, um
+`CODE_OF_CONDUCT.md` (exige um contato de moderação, que não deve ser
+inventado).
 
 ## Testado com hardware real vs. só com dublês
 
-Ver a seção "Testado" de cada `docs/<FASE>.md` (`AUDIO` em
-`docs/API.md`, `docs/LIVE_TRANSCRIPTION.md`, `docs/SCHEDULING.md`,
-`docs/DATABASE.md`) para a distinção exata IMPLEMENTADO ≠ TESTADO COM
-FAKE ≠ TESTADO COM HARDWARE REAL em cada fase — nunca conflate os três.
+Ver a seção "Testado" de cada `docs/<FASE>.md` (`AUDIO` em `docs/API.md`,
+`docs/LIVE_TRANSCRIPTION.md`, `docs/SCHEDULING.md`, `docs/DATABASE.md`) para a
+distinção exata IMPLEMENTADO ≠ TESTADO COM FAKE ≠ TESTADO COM HARDWARE REAL em
+cada fase — nunca conflate os três. Nesta retomada **nada foi testado com
+hardware real**: o que mudou no encerramento e no reprocessamento está
+coberto por dublês e por testes HTTP (item P1-2).
