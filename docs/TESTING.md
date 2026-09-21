@@ -44,13 +44,31 @@ sessão).
 cd frontend
 npm ci
 npm run build   # tsc --build (type-check) + vite build (bundle de produção)
-npx oxlint      # lint
+npx oxlint      # lint (0 erros; 5 avisos conhecidos de set-state-in-effect)
+npm test        # vitest run: componentes e hooks, com o backend mockado
 ```
 
-Sem testes automatizados de componente ainda (não há telas de produto
-construídas — ver `docs/PENDENCIAS.md`). O contrato de tipos
-(`src/types/api.ts`) é verificado por `tsc`; qualquer divergência com o
-que `webui.py` realmente devolve quebra o build.
+`vitest` + `@testing-library/react` (ambiente `jsdom`). Cada tela tem um
+arquivo de teste ao lado — Dashboard, Histórico, Detalhe da Reunião, Nova
+Reunião, Gravação, Agendamentos, Formulário de Agendamento, Configurações —
+mais o `App` (ciclo de vida completo da gravação, a regressão P1-1/P1-5), o
+hook de SSE e o banner de recuperação. Os testes usam `api` mockado: cobrem
+o comportamento da interface, não o backend real (isso é o smoke test HTTP e
+os testes de `tests/test_webui.py`).
+
+O contrato de tipos (`src/types/api.ts`) é verificado por `tsc`; qualquer
+divergência com o que `webui.py` realmente devolve quebra o build. Ao rodar
+o vitest com a máquina sob carga pesada (por exemplo, junto com o `pytest`),
+o início dos workers pode estourar o timeout — rode-o isolado.
+
+### O CI roda tudo
+
+`.github/workflows/ci.yml`: backend (`pytest -q`, em `windows-latest`) e
+frontend (`npm run build`, `npx oxlint`, `npm test`). Um teste que só passa
+na máquina de quem o escreveu é um defeito: já houve dois casos (um teste de
+agendamento tocando a placa de som real e mensagens que dependiam do fuso do
+PC). Para reproduzir o ambiente do CI localmente, rode com `TZ=UTC0` (fuso do
+runner) e proíba sondas de áudio reais.
 
 ## O que NUNCA fazer nesta suite
 

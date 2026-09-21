@@ -83,8 +83,10 @@ automática no boot do painel (evita trabalho de fundo surpresa).
 ## Rótulo de "speaker" (Fase H, versão leve)
 
 Nunca um nome de pessoa (a missão proíbe explicitamente inventar
-"João"/"Maria" sem evidência real). Só o CANAL de origem, já disponível
-desde a Fase C:
+"João"/"Maria" sem evidência real). Só a configuração de captura da
+reunião, já disponível desde a Fase C — **o mesmo rótulo para todos os
+segmentos da reunião** (`_speaker_label(metadata)`), não um rótulo por
+segmento:
 
 | Config da reunião | `speaker_label` |
 |---|---|
@@ -107,11 +109,58 @@ que sintaxe especial do FTS5 (`*`, `-`, `OR`, parênteses) seja
 interpretada como operador em vez de texto literal (testado
 explicitamente com uma consulta cheia desses caracteres).
 
+## Listagem, filtros e paginação
+
+Um único construtor de filtros (`MeetingRepository._filters`) alimenta
+`list_meetings` e `count_meetings`, então o `total` devolvido pela API sempre
+bate com as páginas — inclusive durante uma busca. Filtros combináveis:
+`status`, `query` (título + transcrição), `date_from`/`date_to`.
+
+- **Período**: dias `AAAA-MM-DD` do calendário local, inclusivos nos dois
+  extremos. `started_at` é gravado em ISO **local com offset**
+  (`2026-09-21T19:02:01-03:00`), então o filtro compara o texto com o dia; o
+  fim vira "antes do dia seguinte" (`started_at < '2026-09-22'`). Usar
+  `<= '2026-09-21'` excluiria o dia 21 inteiro, porque
+  `'2026-09-21T19:00…' > '2026-09-21'` como texto (bug real que existia e
+  nunca tinha sido testado). Reunião sem `started_at` fica fora de qualquer
+  filtro de data.
+- **Ordem**: `started_at DESC, created_at DESC`.
+- **`LIKE` (sem FTS5)** escapa `%`, `_` e `\`: buscar "100%" é literal.
+
 ## API
 
-`GET /api/meetings` (lista paginada, filtro `status`, busca `q`),
-`GET /api/meetings/<id>` (detalhe + segmentos), `POST /api/meetings/import`,
-`POST /api/meetings/<id>/delete` (soft delete) — ver `docs/API.md`.
+`GET /api/meetings` (lista paginada; `status`, `q`, `date_from`, `date_to`
+combináveis), `GET /api/meetings/<id>` (detalhe + segmentos),
+`POST /api/meetings/import`, `POST /api/meetings/<id>/delete` (soft delete) —
+ver `docs/API.md`.
+
+## Plano: migrar `schedules.json` para o SQLite
+
+Hoje coexistem duas persistências: agendamentos em `data/schedules.json`
+(escrita atômica, funciona) e reuniões em `data/meetings.db`. **Não é
+urgente** e não deve ser feito junto de outra mudança. Plano, quando o schema
+precisar crescer:
+
+1. **Migration 2** adiciona `schedules` e `schedule_runs` (a recorrência
+   como colunas `recurrence_type` + `recurrence_days` JSON; `current_run` e
+   `history` viram linhas de `schedule_runs` com `schedule_id`, único por
+   `(schedule_id, occurrence_date)` — isso troca a lógica de "não reclamar a
+   mesma ocorrência duas vezes" por uma constraint do banco).
+2. **Importação idempotente** no boot, no mesmo padrão de
+   `storage/import_filesystem.py`: lê o JSON, `INSERT OR IGNORE`, e só
+   renomeia para `schedules.json.migrated` depois de confirmar que a
+   contagem bateu. Nunca apaga o JSON.
+3. Um `ScheduleStore` com a **mesma interface** (`list_all/get/save/delete`), de
+   modo que `SchedulerEngine` e `ScheduleService` não mudam; os testes do
+   engine (que usam um store real em arquivo temporário) passam a rodar
+   contra os dois backends.
+4. Cuidado com a corrida que hoje o JSON evita por ser um arquivo só: o
+   `save` do engine e o `save` do serviço precisam de transação (`BEGIN
+   IMMEDIATE`) para não perder uma atualização concorrente.
+
+Só vale a pena se algo passar a **consultar** agendamentos junto com
+reuniões (ex.: "reuniões geradas por este agendamento") ou quando houver
+mais de um processo escrevendo.
 
 ## Exclusão
 
