@@ -146,6 +146,14 @@ def _isolated_webui(tmp_path, monkeypatch):
             start_recording=webui._scheduler_start_recording,
             request_stop=webui._scheduler_request_stop,
             sample_rate=webui.SAMPLE_RATE,
+            # `SchedulerEngine.__init__` captura `audio_devices.check_device_
+            # health` como valor DEFAULT no momento do import -- o
+            # monkeypatch acima troca so o atributo do modulo, nunca essa
+            # referencia ja capturada. Sem passar o dublê explicitamente, os
+            # testes de agendamento sondavam o dispositivo de audio REAL:
+            # passavam numa maquina com placa de som e falhavam no CI (sem
+            # dispositivo, "Error 0x80070490").
+            check_device_health=_fake_health,
         ),
     )
 
