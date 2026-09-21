@@ -221,12 +221,12 @@ docs/                    # arquitetura, API, fases, segurança, pendências
 | A — Auditoria | Concluída |
 | B — Storage, sessões, recovery | Concluída |
 | C — Áudio (sistema + microfone) | Concluída |
-| C.1 — Agendamento de gravações | Concluída (sem UI; sem iniciar com o app fechado) |
+| C.1 — Agendamento de gravações | Concluída, com telas no React (não inicia com o app fechado) |
 | D — Transcrição quase em tempo real | Núcleo concluído |
 | E — SQLite + histórico | Escopo reduzido, funcional. Indexação **automática** ao final de toda gravação (antes era manual via endpoint, nunca chamado pela UI) |
 | F — Frontend React | Interface **ativa e padrão**, servida por `webui.py`. 7 telas reais (Dashboard, Nova Reunião, Gravação, Detalhe, Agendamentos, Configurações), navegação corrigida (não ejeta mais da tela de Gravação), estado "Finalizando..." explícito ao parar, testes automatizados (vitest). Falta: Histórico paginado |
 | G — Inteligência (resumo/tarefas/decisões) | Não iniciada |
-| H — Diarização | Versão leve (rótulo por canal, não por voz) |
+| H — Diarização | Versão leve: rótulo por reunião conforme a captura (na captura simultânea, tudo é "Reunião"); sem atribuição por segmento nem por voz |
 | I — Exportações | Markdown/TXT/JSON/SRT/VTT concluídos; DOCX/PDF/instalador não |
 
 Detalhe completo, incluindo o que cada fase deliberadamente deixou de

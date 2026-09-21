@@ -27,9 +27,10 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
       (once/daily/weekdays/weekly/custom_days), início/fim automático,
       preflight, detecção de conflito, "missed"/"failed" com tolerância,
       início/parada manual, persistência atômica em JSON. Motor movido a
-      tick (nunca `sleep()` calculado por duração). **Sem UI** ainda (fica
-      pra Fase F) e **sem Nível 2** (Windows Task Scheduler pra iniciar com
-      o app fechado — documentado como pendência). Ver `docs/SCHEDULING.md`.
+      tick (nunca `sleep()` calculado por duração). A UI veio na Fase F
+      (telas Agendamentos e criar/editar). **Sem Nível 2** (Windows Task
+      Scheduler pra iniciar com o app fechado — documentado como
+      pendência). Ver `docs/SCHEDULING.md`.
 - [x] **Fase D — Transcrição quase ao vivo** (núcleo). Janelas de baixa
       latência (8s, sobreposição de 1,5s) separadas dos chunks duráveis
       (30-120s); segmentos provisórios substituídos pelos definitivos por
@@ -75,11 +76,14 @@ da anterior estar implementada, testada e revisada — nao pular etapas.
       (provider de resumo/decisões/tarefas/tópicos, Ollama/OpenAI/
       Anthropic/Gemini opcionais) fica documentada como próximo passo, não
       código — ver `docs/PENDENCIAS.md`.
-- [~] **Fase H — Diarização** (versão leve). Rótulo de speaker por CANAL
-      (`Você` = microfone, `Áudio da reunião` = sistema, `Reunião` = ambos)
+- [~] **Fase H — Diarização** (versão leve). Rótulo de speaker **por
+      reunião**, derivado da configuração de captura (`Você` = só
+      microfone, `Áudio da reunião` = só sistema, `Reunião` = ambos),
       aplicado na importação pro histórico (Fase E) — nunca um nome de
-      pessoa inventado. Diarização de verdade (distinguir vozes dentro do
-      mesmo canal) não implementada.
+      pessoa inventado. **Limitação:** na captura simultânea (o caso
+      principal) todos os segmentos recebem `Reunião`, porque o mixer junta
+      os canais antes da transcrição; atribuição por segmento
+      (microfone → `Você`) e por voz não estão implementadas.
 - [x] **Fase I — Exportações** (parcial). Markdown/TXT/JSON/SRT/VTT,
       gerados sob demanda a partir do histórico (Fase E), sem gravar em
       disco. **Não fez**: DOCX/PDF (explicitamente opcional/condicionado a

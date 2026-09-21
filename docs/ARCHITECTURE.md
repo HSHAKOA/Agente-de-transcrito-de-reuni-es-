@@ -1,9 +1,100 @@
 # Arquitetura
 
 Este documento descreve o fluxo **real** do codigo (nao um plano aspiracional).
-Atualizado apos a Fase B (graceful shutdown, validacao, sessao, recuperacao).
+As secoes "Visao geral" e "Modelo de concorrencia" refletem o estado atual
+(fases A a F); as demais detalham o pipeline de gravacao, o encerramento
+gracioso, a pasta de reunioes e a recuperacao. Fluxogramas: `docs/FLOWCHARTS.md`.
+
+## Visao geral
+
+Dois processos, um navegador. O **painel** (`webui.py`) e um servidor HTTP
+local que so escuta em `127.0.0.1`; cada gravacao roda num **subprocesso
+separado** (`python -m meeting_transcriber`), de modo que um travamento do
+Whisper ou da captura nunca derruba o painel, e o painel nunca precisa
+esperar a transcricao.
+
+```
+Navegador (React, frontend/dist)
+      |  HTTP + JSON  (POST valida Host e Origin)     SSE (niveis, transcricao ao vivo)
+      v
+webui.py -- processo "painel" (ThreadingHTTPServer, 127.0.0.1:8765)
+      |-- Handler ............ roteia /api/*, serve o build do React, valida entrada
+      |-- estado da gravacao . `state` protegido por `state_lock` (start/stop/stopping)
+      |-- SchedulerEngine .... thread de tick: agenda, preflight, inicia/para sozinho
+      |-- MeetingRepository .. SQLite (historico/busca), toda operacao sob um lock
+      |-- export/ ............ Markdown, TXT, JSON, SRT, VTT gerados sob demanda
+      |
+      |  subprocess.Popen(lista de argumentos, sem shell) + sinal de encerramento
+      v
+python -m meeting_transcriber -- processo "gravador"
+      |-- audio/ ............. dispositivos, captura de sistema e/ou microfone
+      |                        (dual_capture: uma thread por fonte), mixer, medidor RMS
+      |-- recorder + fila .... blocos duraveis (.wav) -> transcricao (faster-whisper)
+      |-- live/ .............. janelas curtas (8 s) em thread propria, com dedup
+      |-- session.py ......... metadata.json + state.json (escrita atomica)
+      '-- escreve, de forma atomica, na pasta da reuniao:
+            transcript.md  levels.json  live_transcript.json  chunks/  audio/
+```
+
+**Comunicacao painel <-> gravador**: nao ha socket nem fila entre os dois
+processos. O gravador escreve arquivos na pasta da reuniao (`levels.json` a
+cada 0,2 s e `live_transcript.json`, ambos via arquivo temporario +
+`os.replace`, entao o leitor nunca ve um arquivo pela metade); o painel os
+le e os repassa ao React como SSE. A saida padrao do gravador e lida por uma
+thread (`_reader_thread`) que, ao detectar o fim do processo, indexa a
+reuniao no SQLite automaticamente.
+
+### Persistencia
+
+| Dado | Onde | Observacao |
+|---|---|---|
+| Reuniao (audio, blocos, transcricao, estado) | pasta `AAAA-MM-DD_HHMM_Titulo_xxxxxx/` na raiz escolhida | fonte da verdade; nunca apagada pelo app |
+| Historico e busca | `data/meetings.db` (SQLite: `meetings`, `meeting_segments`, indice FTS5 `search_index`, `schema_version`) | indice derivado do filesystem; reconstruivel via importacao idempotente |
+| Agendamentos | `data/schedules.json` | JSON com escrita atomica; ainda nao migrado para SQLite (ver `docs/PENDENCIAS.md`) |
+| Preferencias | `data/settings.json` | pasta de reunioes, raizes conhecidas, dispositivos de audio |
+
+`data/` e ignorado pelo Git: contem audio e transcricoes pessoais.
+
+### Mapa de modulos (`src/meeting_transcriber/`)
+
+| Modulo | Responsabilidade |
+|---|---|
+| `cli.py` | processo gravador: junta captura, fila, Whisper, escrita e encerramento |
+| `recorder.py`, `transcriber.py`, `markdown_writer.py` | gravacao em blocos, transcricao duravel, `.md` incremental |
+| `audio/` | `devices` (enumeracao + checagem de saude), `dual_capture`, `mixer`, `levels`, `loopback`, `microphone`, `models` |
+| `live/` | `window`, `pipeline`, `dedup`, `segments`, `transcript`, `whisper_adapter` (transcricao quase ao vivo) |
+| `scheduling/` | `models`, `recurrence`, `conflicts`, `engine`, `service`, `store`, `validation`, `clock` |
+| `storage/` | `db` (migrations versionadas), `repository`, `import_filesystem` |
+| `export/` | um formatador por formato (`markdown`, `txt`, `json_format`, `srt`, `vtt`) |
+| `session.py`, `settings.py`, `validation.py`, `folder_dialog.py`, `whisper_config.py` | sessao persistente/recuperacao, preferencias, validacao de entrada, seletor nativo de pasta, presets do Whisper |
+
+## Modelo de concorrencia
+
+- **Gravar nunca espera transcrever**: captura e transcricao ficam em threads
+  separadas ligadas por uma fila; se o Whisper atrasa, a fila cresce e a
+  gravacao continua (testado em `tests/test_live_pipeline.py`).
+- **Um lock por recurso compartilhado**: `state_lock` (estado da gravacao no
+  painel), `MeetingRepository._lock` (toda leitura e escrita da conexao SQLite
+  compartilhada), `ScheduleStore._lock`, `MeetingSession._lock`, o lock do
+  snapshot de transcricao ao vivo e o do medidor de nivel. O acesso a COM do
+  Windows e serializado por `_com_lock` em `audio/devices.py`.
+- **Encerramento em dois tempos**: `POST /api/stop` marca `state["stopping"]`
+  (um segundo pedido recebe 409) e o gravador recebe um sinal (nao um `kill`);
+  so se nao terminar dentro do prazo ha escalonamento para `terminate` e, por
+  ultimo, `kill`.
+- **Instancia unica**: o servidor nao usa `allow_reuse_address` — subir um
+  segundo painel falha em vez de virar um processo zumbi. A deteccao de
+  recuperacao e o scheduler so iniciam depois de confirmar que a porta e nossa.
+- **Threads de vida longa sao daemon** (SSE, captura, tick do scheduler): nenhuma
+  impede o encerramento do processo.
 
 ## Fluxo de ponta a ponta
+
+O diagrama abaixo detalha o caminho de **uma fonte de audio**
+(`audio_capture.get_loopback_microphone`). Com microfone + sistema, o
+`audio/dual_capture.py` executa uma captura por fonte e o `audio/mixer.py`
+mistura os canais bloco a bloco antes da transcricao duravel; a estrutura
+(thread de captura -> fila -> consumidor) e a mesma.
 
 ```
 audio_capture.get_loopback_microphone()
@@ -117,11 +208,11 @@ finalizar -- e marcada `interrupted` (nada e apagado) e aparece em
 `/api/recovery` pro usuario mandar reprocessar (`/api/meetings/<id>/resume`,
 que roda `python -m meeting_transcriber --resume <meeting_dir>`: nao grava
 audio novo, so retranscreve os blocos que ainda nao tinham sido transcritos
-com sucesso e reanexa ao `.md` existente). **Limitacao conhecida:** a
-varredura so olha a raiz ATUAL configurada — reunioes deixadas para tras
-numa raiz anterior (o usuario trocou de pasta) nao aparecem no banner ate a
-raiz ser trocada de volta; os arquivos continuam intactos em disco, so nao
-sao descobertos automaticamente por essa tela.
+com sucesso e reanexa ao `.md` existente). A varredura cobre **todas as
+raizes ja usadas** (`settings.get_known_meeting_roots`), nao so a ativa:
+uma sessao deixada numa pasta anterior continua aparecendo depois que o
+usuario troca de raiz. Nada fora dessas raizes escolhidas e varrido. Ver
+`docs/RECOVERY.md`.
 
 ## Validacao de entrada (webui.py)
 
@@ -131,18 +222,23 @@ antes de virar argumento de linha de comando do subprocesso: `model`/
 tamanho maximo. Nao ha mais campo `output` no contrato — ver "Fim do campo
 output" acima. Ver `docs/SECURITY.md` para o raciocinio completo.
 
-## Frontend (preview arquitetural, Fase F)
+## Frontend (interface ativa)
 
-`frontend/` contem um projeto Vite + React + TypeScript + Tailwind CSS,
-com tipos e um cliente HTTP (`src/types/api.ts`, `src/services/api.ts`)
-que espelham o contrato real das rotas acima. **Nao e o frontend ativo**:
-`index.html`/`webui.py` continuam sendo a interface do produto ate a
-migracao completar as etapas de paridade funcional (Fase F do roadmap,
-depois de C/D/E). Ver `frontend/README.md`.
+`frontend/` e um projeto Vite + React 19 + TypeScript + Tailwind CSS v4 e
+**e a interface do produto**: `webui.py` serve o build (`frontend/dist/`) na
+mesma origem da API, com fallback de SPA para rotas do cliente e sem nunca
+interceptar `/api/*` (que responde 404 quando desconhecida). O painel legado
+(`index.html`) so e servido quando o build nunca foi gerado. O cliente HTTP
+tipado (`src/services/api.ts`, `src/types/api.ts`) espelha o contrato real
+das rotas; nenhuma regra de negocio vive no frontend. Ver `frontend/README.md`.
 
-## O que NAO mudou nesta fase
+## O que ainda nao existe
 
-Captura de audio continua so o loopback do sistema (sem microfone/mixer —
-isso e Fase C). Nao ha SQLite, historico de reunioes navegavel, resumo/
-tarefas/decisoes, nem diarizacao — essas sao as fases E em diante do
-roadmap. Ver `docs/AUDITORIA_V2.md` e `docs/ROADMAP.md`.
+Resumo, tarefas e decisoes automaticas (Meeting Intelligence, Fase G) e
+diarizacao (Fase H). Hoje o rotulo de "quem falou" e **por reuniao**, derivado
+da configuracao de captura (`Voce` = so microfone, `Audio da reuniao` = so
+sistema, `Reuniao` = os dois): na captura simultanea todos os segmentos
+recebem `Reuniao`, porque o mixer junta os canais antes da transcricao — nao
+ha atribuicao por segmento nem por voz. Agendamentos ainda vivem em
+`schedules.json` e so disparam com o painel aberto. Ver `docs/ROADMAP.md` e
+`docs/PENDENCIAS.md`.

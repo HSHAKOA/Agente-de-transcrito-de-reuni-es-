@@ -13,12 +13,16 @@ organização de GitHub/documentação (README, CHANGELOG, CI, fluxogramas).
 
 ## Fases concluídas nesta sessão
 
+> Tabela do **Checkpoint 1** (histórica). Onde a Fase F e o agendamento
+> aparecem sem UI/só com toolchain, isso foi superado pelo Checkpoint 2 e
+> pelos seguintes — o estado vigente está no último checkpoint deste arquivo.
+
 | Fase | Status | Doc |
 |---|---|---|
-| C.1 — Agendamento | Completa, testada, sem UI | `docs/SCHEDULING.md` |
+| C.1 — Agendamento | Completa, testada (a UI veio depois, na Fase F) | `docs/SCHEDULING.md` |
 | D — Transcrição ao vivo | Núcleo completo, testado | `docs/LIVE_TRANSCRIPTION.md` |
 | E — SQLite + histórico | Escopo reduzido, funcional | `docs/DATABASE.md` |
-| F — React | Só toolchain + cliente tipado | `docs/PENDENCIAS.md` |
+| F — React | Na época só toolchain + cliente tipado; hoje 7 telas ativas | `docs/PENDENCIAS.md` |
 | H (leve) — Speaker por canal | Aplicado na importação (E) | `docs/DATABASE.md` |
 | I (parcial) — Exportações | md/txt/json/srt/vtt | `docs/API.md` |
 | G — Inteligência | Não iniciada | `docs/PENDENCIAS.md` |

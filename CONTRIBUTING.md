@@ -20,15 +20,19 @@ nenhum modelo. Testes que exigem hardware real de áudio ficam em
 `tests/test_*_hardware.py` e são pulados automaticamente quando não há
 dispositivo de áudio disponível no ambiente.
 
-Frontend (`frontend/`, ainda não é a interface ativa — ver
-`docs/PENDENCIAS.md`):
+Frontend (`frontend/`, a interface ativa — servida por `webui.py` a partir
+de `frontend/dist/`):
 
 ```bash
 cd frontend
 npm ci
-npm run build   # tsc (type-check) + vite build
+npm run build   # tsc (type-check) + vite build -> dist/
 npx oxlint
+npm test        # vitest (componentes e hooks)
 ```
+
+O CI (`.github/workflows/ci.yml`) roda exatamente estes passos, mais
+`pytest` no backend — rode-os localmente antes de abrir um PR.
 
 ## Arquitetura
 
