@@ -16,6 +16,15 @@ __pycache__/
 # de /data/ de proposito, ver settings.py) -- nunca deveria ser commitada
 /Eletrica/
 
+# pastas de reuniao geradas pelo app (AAAA-MM-DD_HHMM_Titulo_xxxxxx, com
+# audio/, chunks/ e transcricoes pessoais), em QUALQUER profundidade: o
+# usuario pode escolher como raiz de reunioes uma pasta dentro do proprio
+# repositorio (aconteceu: Ingles/, AdmPordução/ e uma pasta de reuniao
+# direto na raiz, todas untracked) e um `git add -A` distraido publicaria
+# audio pessoal. Ignorar pela assinatura do nome cobre qualquer raiz
+# escolhida, sem precisar listar uma por uma.
+**/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9][0-9][0-9]_*/
+
 # arquivos .md soltos na raiz sao anotacoes pessoais do usuario (workspace
 # incidental desta maquina, nao fazem parte do codigo do produto) -- so os
 # docs do proprio projeto que vivem na raiz (nao em docs/) sao excecao.
