@@ -54,3 +54,6 @@ jobs:
 
       - name: Lint
         run: npx oxlint
+
+      - name: Testes de componente (vitest)
+        run: npm test
