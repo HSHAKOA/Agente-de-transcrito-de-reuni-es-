@@ -143,6 +143,30 @@ describe("Recording", () => {
     expect(screen.getByRole("button", { name: "Parar reunião" })).toBeEnabled();
   });
 
+  it("um reprocessamento nao mostra 'GRAVANDO' nem medidores, so o cronometro e o botao de parar", () => {
+    streams.levels = { system: { level: 0.4, active: true, updated_at: 1 } };
+    streams.live = snapshot();
+    render(<Recording status={runningStatus({ mode: "resume" })} />);
+
+    expect(screen.getByText("REPROCESSANDO")).toBeInTheDocument();
+    expect(screen.queryByText("GRAVANDO")).not.toBeInTheDocument();
+    expect(screen.getByText(/Nenhum áudio novo está sendo gravado/)).toBeInTheDocument();
+    expect(screen.queryByText("Áudio do computador")).not.toBeInTheDocument();
+    expect(screen.queryByText("Transcrição ao vivo")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Parar reprocessamento" })).toBeEnabled();
+  });
+
+  it("parar um reprocessamento usa a mesma trava de duplo clique e mensagem propria", async () => {
+    api.stopMeeting.mockResolvedValue({ ok: true, message: "Parando." });
+    render(<Recording status={runningStatus({ mode: "resume" })} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Parar reprocessamento" }));
+
+    expect(await screen.findByText(/Finalizando reprocessamento/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Finalizando…" })).toBeDisabled();
+    expect(api.stopMeeting).toHaveBeenCalledTimes(1);
+  });
+
   it("status.stopping do backend mostra 'Finalizando' e desabilita Parar sem nenhum clique", () => {
     render(<Recording status={runningStatus({ stopping: true })} />);
 
