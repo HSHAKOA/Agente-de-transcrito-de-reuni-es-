@@ -209,6 +209,12 @@ state = {
     # ate ~35s), permitindo um duplo clique disparar uma segunda thread de
     # shutdown concorrente no mesmo processo.
     "stopping": False,
+    # O que o processo em `proc` esta fazendo: "record" (gravando + transcrevendo
+    # uma reuniao nova) ou "resume" (so retranscrevendo os blocos pendentes de
+    # uma sessao interrompida, sem gravar audio). As duas ocupam o MESMO slot
+    # (`proc`), entao sem isto a UI so saberia dizer "gravando" -- enganoso
+    # durante um "Reprocessar". None enquanto nao ha processo.
+    "mode": None,
 }
 
 
@@ -313,6 +319,7 @@ def _reader_thread(proc: subprocess.Popen) -> None:
         state["exit_code"] = exit_code
         state["proc"] = None  # libera pra um novo /api/start poder rodar
         state["stopping"] = False
+        state["mode"] = None
     _log(f"[painel] processo encerrado (codigo {exit_code}).")
     if interrupted_now is not None:
         _log(
@@ -608,6 +615,7 @@ def start_transcriber(opts: dict, persist_as_default: bool = True) -> "tuple[boo
             return False, error
 
         state["proc"] = proc
+        state["mode"] = "record"
         state["output"] = str(output_path)
         state["chunk_seconds"] = chunk_seconds
         state["meeting_dir"] = str(meeting_dir)
@@ -715,6 +723,7 @@ def resume_meeting(meeting_id: str) -> "tuple[bool, str]":
             return False, error
 
         state["proc"] = proc
+        state["mode"] = "resume"
         state["output"] = None
         state["chunk_seconds"] = None
         state["meeting_dir"] = str(meeting_dir)
@@ -740,6 +749,7 @@ def get_status() -> dict:
         payload = {
             "running": running,
             "stopping": state["stopping"],
+            "mode": state["mode"] if running else None,
             "output": output,
             "chunk_seconds": chunk_seconds,
             "meeting_dir": state["meeting_dir"],

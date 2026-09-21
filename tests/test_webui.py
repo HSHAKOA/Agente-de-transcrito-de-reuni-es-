@@ -182,6 +182,18 @@ def _isolated_webui(tmp_path, monkeypatch):
     for proc in created_procs:
         proc.finish(0)  # libera qualquer thread leitora ainda bloqueada em stdout
 
+    # As threads leitoras (`_reader_thread`, daemon) terminam de forma
+    # ASSINCRONA depois de `proc.finish`. Sem esperar aqui, uma delas pode
+    # chegar em `import_meeting(meeting_repository, ...)` DEPOIS do
+    # monkeypatch ser desfeito -- e ai `meeting_repository` e o REAL
+    # (data/meetings.db do usuario), que recebe uma reuniao-fantasma
+    # apontando pra uma pasta tmp do pytest (aconteceu: 3 linhas assim no
+    # banco real, vindas dos testes de `resume_meeting`). O teardown desta
+    # fixture roda ANTES do undo do monkeypatch, entao esperar aqui basta.
+    for thread in threading.enumerate():
+        if getattr(thread, "_target", None) is webui._reader_thread:
+            thread.join(timeout=5)
+
 
 def _wait_for(predicate, timeout=2.0):
     deadline = time.time() + timeout
@@ -1529,6 +1541,27 @@ def test_reader_thread_marks_session_interrupted_when_process_dies_before_finali
     assert any("Reprocessar" in line for line in _log_lines())
     with webui.state_lock:
         assert webui.state["proc"] is None  # o slot foi liberado normalmente
+
+
+def test_status_mode_distinguishes_recording_from_reprocessing(_isolated_webui, tmp_path, monkeypatch):
+    """Um reprocessamento ocupa o mesmo slot de processo que uma gravacao;
+    sem `mode`, a UI so saberia dizer "gravando" durante um "Reprocessar"."""
+    assert webui.get_status()["mode"] is None
+
+    webui.start_transcriber({})
+    assert webui.get_status()["mode"] == "record"
+    proc = _isolated_webui[0]
+    proc.finish(0)
+    webui._reader_thread(proc)
+    status = webui.get_status()
+    assert status["running"] is False
+    assert status["mode"] is None
+
+    session = _new_session_with_untranscribed_chunk(tmp_path, "resume-mode-1")
+    monkeypatch.setattr(webui, "is_pid_running", lambda pid: False)
+    ok, message = webui.resume_meeting(session.state["meeting_id"])
+    assert ok, message
+    assert webui.get_status()["mode"] == "resume"
 
 
 def test_reader_thread_leaves_a_properly_finished_session_alone(_isolated_webui, tmp_path):

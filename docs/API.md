@@ -31,6 +31,8 @@ Consultado a cada 1.5s pela página. Resposta:
 ```json
 {
   "running": true,
+  "stopping": false,
+  "mode": "record",
   "output": "C:\\...\\transcript.md",
   "chunk_seconds": 300,
   "meeting_dir": "C:\\...\\2026-09-14_1900_Reuniao_ab12ef",
@@ -49,6 +51,13 @@ Consultado a cada 1.5s pela página. Resposta:
 
 `block_elapsed`/`block_index`/`output_*` só aparecem quando há uma gravação
 com `output` definido.
+
+`stopping` é `true` do momento em que `POST /api/stop` é aceito até o
+processo realmente terminar (um segundo `stop` recebe `409`). `mode` diz o
+que o processo em andamento faz: `"record"` (gravando e transcrevendo uma
+reunião nova) ou `"resume"` (só retranscrevendo os blocos pendentes de uma
+sessão interrompida, sem gravar áudio); `null` quando nada está rodando. Os
+dois ocupam o mesmo slot de processo, por isso a distinção existe.
 
 ### `POST /api/start`
 
@@ -162,7 +171,11 @@ Varre **todas** as raízes já conhecidas (não só a ativa — ver
 `docs/RECOVERY.md`). `{"sessions": [ {...estado da sessao...} ]}`, só
 sessões com `status == "interrupted"`. Cada item tem o formato de
 `state.json` (`meeting_id`, `title`, `status`, `chunk_count`,
-`chunks_transcribed`, `pid`, ...).
+`chunks_transcribed`, `pid`, ...). Uma sessão vira `interrupted` de duas
+formas: na varredura do boot do painel, ou **assim que o painel vê o
+processo gravador terminar sem ter finalizado a sessão** (por exemplo, o
+encerramento gracioso estourou o prazo e o painel escalou para
+`terminate()`) — nesse caso ela aparece aqui imediatamente, sem reiniciar.
 
 ### `POST /api/meetings/<meeting_id>/resume`
 
