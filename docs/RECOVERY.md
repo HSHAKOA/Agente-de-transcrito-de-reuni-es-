@@ -22,7 +22,10 @@ escolha: `Documentos/Reunioes`):
                      # meeting_directory, caminho do .md (fixo)
     state.json      # status atual + lista de chunks (muda a cada evento)
     transcript.md   # a transcricao
-    chunks/         # os .wav de cada bloco gravado
+    chunks/         # os .wav de cada bloco (captura de UMA fonte)
+    audio/          # captura simultanea: system/, microphone/ e mixed/,
+                    # cada uma com os chunk_NNNNN.wav da fonte
+    levels.json, live_transcript.json   # snapshots ao vivo (painel le via SSE)
 ```
 
 `state.json` e escrito de forma **atomica** (grava num arquivo temporario e
@@ -58,6 +61,20 @@ esta genuinamente ativa nunca teria esse estado "preso": ela so existe
 enquanto o processo que a criou esta vivo (e so um processo por vez, ver
 `SinglePortServer`).
 
+### Deteccao imediata (quando o painel ve o processo morrer)
+
+A varredura de boot so pega o que sobrou de um painel anterior. Quando o
+**proprio painel** ve o gravador terminar sem ter finalizado a sessao — o
+caso tipico e o encerramento gracioso estourar o prazo e o painel escalar
+para `terminate()`, que nao deixa o processo atualizar `state.json` —,
+`_reader_thread` chama `session.mark_session_interrupted_if_live` **antes**
+de liberar o slot de gravacao. A sessao vira `interrupted` na hora (o
+historico SQLite tambem reflete isso, porque a importacao roda depois), e
+aparece em `GET /api/recovery` sem precisar reiniciar o painel. Uma sessao
+que terminou direito (`completed`/`interrupted`/`failed`) nunca e alterada,
+e uma falha de disco ao marcar nunca impede o slot de ser liberado (o
+proximo boot ainda pega a sessao).
+
 `GET /api/recovery` e `POST /api/meetings/<id>/resume` seguem a mesma
 regra: `settings.json` guarda `known_meeting_roots` (toda raiz que o
 usuario ja escolheu explicitamente algum dia, deduplicada e normalizada —
@@ -84,7 +101,12 @@ Regras de `known_meeting_roots` (`meeting_transcriber.settings`):
 
 ### Reprocessamento
 
-O painel expoe:
+No React, o Dashboard mostra o banner "Sessoes interrompidas encontradas"
+(`components/RecoveryBanner.tsx`, hook `useRecovery`) com titulo, blocos
+transcritos/total e o botao **Reprocessar**; enquanto o reprocessamento
+roda o Dashboard mostra "Reprocessando uma sessao interrompida…"
+(`status.mode == "resume"`, ver `docs/API.md`). O painel legado
+(`index.html`) tem o mesmo card. O painel expoe:
 
 - `GET /api/recovery` — lista as sessoes `interrupted` encontradas (titulo,
   quantos blocos ja foram transcritos vs. total).
