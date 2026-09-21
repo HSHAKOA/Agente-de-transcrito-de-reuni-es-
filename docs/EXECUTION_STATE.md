@@ -153,7 +153,7 @@ esteve verde** (9/9 execuções falharam). Detalhe dos achados e das provas em
 
 | Verificação | Resultado |
 |---|---|
-| `pytest -q` (fuso normal **e** `TZ=UTC0`) | **648 passed**, 0 warnings de hardware nos testes não-hardware |
+| `pytest -q` (fuso normal **e** `TZ=UTC0`) | **650 passed**, 0 warnings de hardware nos testes não-hardware |
 | `npm test` | **79 passed em 11 arquivos** |
 | `npm run build` / `npx oxlint` | ok / 0 erros, os mesmos 5 avisos |
 | CI remoto | **não verificado** — nenhum commit foi enviado |
@@ -176,7 +176,7 @@ esteve verde** (9/9 execuções falharam). Detalhe dos achados e das provas em
 | Speakers (H) | PARCIAL | sim | rótulo por reunião, não por segmento |
 | Exports | PARCIAL | sim | md/txt/json/srt/vtt; sem DOCX/PDF |
 | Packaging | AUSENTE | — | `iniciar.bat`; `frontend/dist/` não versionado |
-| Tests | PRONTO | 648 + 79 | hermeticidade verificada (`TZ=UTC0`, sondas de áudio proibidas) |
+| Tests | PRONTO | 650 + 79 | hermeticidade verificada (`TZ=UTC0`, sondas de áudio proibidas) |
 | Security | PRONTO para o modelo local | sim | ver `docs/SECURITY.md`; sem autenticação (aceito) |
 | Documentation | PRONTO para o tocado | — | `ARCHITECTURE.md` reescrito; ver P1 do handoff |
 

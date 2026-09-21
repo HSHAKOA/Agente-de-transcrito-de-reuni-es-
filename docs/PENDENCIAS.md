@@ -21,7 +21,7 @@ reproduzível, core estável, testes, docs e GitHub organizados.
 | Core estável (áudio, transcrição, recovery, agendador, SQLite) | pronto, com a ressalva da validação real abaixo |
 | React funcional, 8 telas + recuperação, cada uma testada | pronto |
 | Histórico dedicado (busca, status, período, paginação) | pronto |
-| Testes reproduzíveis (backend 648, frontend 79) | pronto localmente; **CI ainda não confirmado verde** |
+| Testes reproduzíveis (backend 650, frontend 79) | pronto localmente; **CI ainda não confirmado verde** |
 | CI verde (backend, build, lint, testes do frontend) | corrigido e verificado localmente; **precisa do push** |
 | Sem dados pessoais no repositório | pronto (histórico do Git conferido; `.gitignore` por assinatura) |
 | Docs alinhados com o código | pronto para o que foi tocado; ver "Documentação" abaixo |
@@ -66,7 +66,8 @@ parar, recuperar, agendar, buscar, exportar) funciona e está testado.
 CI vermelho (teste tocando a placa de som real; mensagens no fuso do PC);
 sessão morta ficava `processing`; React sem banner de recuperação; **todo
 "Parar" de gravação longa caía em `terminate()`**; busca sem paginação e
-filtro de data que excluía o dia inteiro; testes vazando reuniões-fantasma
+filtro de data que excluía o dia inteiro; servidor que recusava Host/Origin
+sem ler o corpo (reset de conexão sob carga); testes vazando reuniões-fantasma
 para o banco real; pastas de reunião fora do `.gitignore`; docs defasados e
 o banner "Prévia (Fase F)" em toda tela. Detalhe e evidências em
 `docs/HANDOFF_PROXIMA_SESSAO.md`.

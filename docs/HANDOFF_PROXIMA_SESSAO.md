@@ -25,8 +25,9 @@ o verde no GitHub**.
 | 6 | Testes vazaram 3 reuniões-fantasma para o `meetings.db` **real** | linhas apontando para pastas tmp do pytest | fixture espera as threads leitoras antes do undo do monkeypatch |
 | 7 | Dados pessoais a um `git add -A` de distância | 3 pastas de reunião (com áudio) untracked e fora do `.gitignore` | `.gitignore` por assinatura `AAAA-MM-DD_HHMM_*` |
 | 8 | Docs e UI defasados | `ARCHITECTURE.md` parava na Fase B; banner "Prévia (Fase F)" em toda tela | reescritos/removidos |
+| 9 | Servidor recusava Host/Origin **sem ler o corpo** | corpo chegando ≥50 ms depois dos cabeçalhos → `ConnectionAbortedError` em 20/20 tentativas (e uma falha instável do `test_http_post_rejects_disallowed_origin` na verificação final) | `_discard_body()` (drenagem com teto, a mesma do 413) antes de responder 400/403 |
 
-Prova de que os testes pegam o problema: para as correções 1, 2, 5 e para os
+Prova de que os testes pegam o problema: para as correções 1, 2, 5, 9 e para os
 ajustes de Settings/Schedules o código antigo foi reaplicado e os testes novos
 **falharam** (no filtro de data, com `set()` no lugar de 2 reuniões; na busca,
 com `total` 2 em vez de 5). No encerramento (4) há um teste de contraste — o
@@ -79,7 +80,7 @@ integração com calendários, base de conhecimento.
 
 ## Testes (medidos nesta sessão)
 
-- **Backend**: `pytest -q` → **648 passed** (era 608), idêntico com
+- **Backend**: `pytest -q` → **650 passed** (era 608), idêntico com
   `TZ=UTC0` (fuso do runner do CI).
 - **Frontend**: `npm test` → **79 passed em 11 arquivos** (era 26 em 6);
   `npm run build` ok (tsc + vite); `npx oxlint` → 0 erros, 5 avisos

@@ -24,7 +24,10 @@ Reconstrução do estado real a partir de `cc9c095`, antes de implementar:
   (`date_from`/`date_to`, dias inclusivos), pagina também a busca e devolve um
   `total` consistente; data malformada responde `400`. O filtro de data
   antigo excluía o último dia inteiro. Nova tela **Histórico** no React.
-- **Testes**: backend 608 → 648; frontend 26 → 79 (Recording, Schedules,
+- **Servidor**: uma requisição recusada por Host/Origin agora consome o corpo
+  antes de responder (antes, um corpo tardio causava reset de conexão em vez do
+  403/400).
+- **Testes**: backend 608 → 650; frontend 26 → 79 (Recording, Schedules,
   Settings, History, RecoveryBanner). Testes de agendamento agora herméticos.
 - **Segurança e higiene**: pastas de reunião ignoradas pelo Git em qualquer
   profundidade; testes deixaram de vazar reuniões-fantasma para o banco real;
