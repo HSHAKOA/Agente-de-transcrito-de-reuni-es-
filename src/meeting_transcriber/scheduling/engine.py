@@ -43,7 +43,7 @@ from .models import (
     ScheduleRun,
     TERMINAL_RUN_STATUSES,
 )
-from .recurrence import next_occurrence
+from .recurrence import next_occurrence, to_schedule_zone
 from .store import ScheduleStore
 
 logger = logging.getLogger("meeting_transcriber.scheduling")
@@ -159,7 +159,7 @@ class SchedulerEngine:
         if now >= end_at:
             self._store.save(schedule)
             return False, (
-                f"A janela agendada terminaria as {end_at.astimezone().strftime('%H:%M')}; "
+                f"A janela agendada terminaria as {to_schedule_zone(end_at, schedule.timezone).strftime('%H:%M')}; "
                 "nao e mais possivel iniciar esta ocorrencia."
             )
         if self._is_recording_active():
@@ -227,7 +227,8 @@ class SchedulerEngine:
                 run.status = STATUS_FAILED if run.error_message else STATUS_MISSED
                 run.error_message = run.error_message or (
                     f"Esta gravacao estava programada para comecar as "
-                    f"{start_at.astimezone().strftime('%H:%M')}. O aplicativo nao estava disponivel naquele horario."
+                    f"{to_schedule_zone(start_at, schedule.timezone).strftime('%H:%M')}. "
+                    "O aplicativo nao estava disponivel naquele horario."
                 )
                 schedule.status = run.status
                 self._store.save(schedule)

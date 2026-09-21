@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from .models import Schedule
-from .recurrence import Occurrence, iter_occurrences
+from .recurrence import Occurrence, iter_occurrences, to_schedule_zone
 
 CONFLICT_CHECK_HORIZON_DAYS = 30
 CONFLICT_CHECK_MAX_OCCURRENCES = 60
@@ -34,8 +34,9 @@ class Conflict:
     this_occurrence: Occurrence
 
     def message(self) -> str:
-        start_local = self.other_occurrence.start_at.astimezone()
-        end_local = self.other_occurrence.end_at.astimezone()
+        tz_name = self.other_schedule.timezone
+        start_local = to_schedule_zone(self.other_occurrence.start_at, tz_name)
+        end_local = to_schedule_zone(self.other_occurrence.end_at, tz_name)
         return (
             f"Existe outra gravacao programada neste horario: {self.other_schedule.title} "
             f"({start_local.strftime('%d/%m %H:%M')} - {end_local.strftime('%H:%M')}). "

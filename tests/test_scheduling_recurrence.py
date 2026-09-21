@@ -19,6 +19,7 @@ from meeting_transcriber.scheduling.recurrence import (
     next_occurrence,
     occurrence_window_for_date,
     resolve_zone,
+    to_schedule_zone,
 )
 
 
@@ -44,6 +45,20 @@ def test_resolve_zone_valid():
 def test_resolve_zone_invalid_raises():
     with pytest.raises(InvalidTimeZone):
         resolve_zone("Nao/Existe")
+
+
+def test_to_schedule_zone_converts_utc_to_the_named_zone():
+    moment = datetime(2026, 9, 15, 22, 0, tzinfo=timezone.utc)
+    assert to_schedule_zone(moment, "America/Sao_Paulo").strftime("%H:%M") == "19:00"
+    assert to_schedule_zone(moment, "Asia/Tokyo").strftime("%H:%M") == "07:00"
+
+
+def test_to_schedule_zone_invalid_name_falls_back_instead_of_raising():
+    """Uma mensagem de erro nunca pode derrubar o tick do scheduler."""
+    moment = datetime(2026, 9, 15, 22, 0, tzinfo=timezone.utc)
+    result = to_schedule_zone(moment, "Nao/Existe")
+    assert result.tzinfo is not None
+    assert result == moment  # mesmo instante, so muda a representacao
 
 
 def test_occurrence_window_same_day():

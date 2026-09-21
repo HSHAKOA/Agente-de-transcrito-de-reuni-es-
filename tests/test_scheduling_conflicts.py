@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from meeting_transcriber.scheduling.conflicts import find_conflicts, first_conflict_message
 from meeting_transcriber.scheduling.models import STATUS_CANCELLED, Recurrence, Schedule
 
@@ -62,6 +64,18 @@ def test_conflict_message_matches_expected_format():
     assert message is not None
     assert "Projeto ERP" in message
     assert "Altere um dos horarios" in message
+
+
+@pytest.mark.parametrize("tz_name", ["America/Sao_Paulo", "Asia/Tokyo"])
+def test_conflict_message_shows_times_in_the_schedules_own_timezone(tz_name):
+    """O horario citado e o de parede do agendamento ("19:00"), nunca o do
+    computador que roda o app -- duas zonas com offsets diferentes pra o
+    teste nao passar por coincidencia com o fuso da maquina (o CI roda em
+    UTC)."""
+    a = _schedule("a", "19:00", "20:00", timezone=tz_name)
+    b = _schedule("b", "19:30", "21:00", timezone=tz_name)
+    message = first_conflict_message(b, [a], NOW)
+    assert "15/09 19:00 - 20:00" in message
 
 
 def test_no_conflict_message_when_no_overlap():

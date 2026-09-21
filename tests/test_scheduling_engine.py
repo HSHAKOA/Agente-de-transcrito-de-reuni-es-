@@ -365,6 +365,60 @@ def test_start_now_refuses_when_current_run_window_already_elapsed(tmp_path: Pat
     assert backend.start_calls == []
 
 
+# Mensagens que citam um horario usam o fuso do AGENDAMENTO, nunca o do
+# computador que roda o app. Duas zonas com offsets diferentes (-3 e +9)
+# garantem que o teste nunca passa por coincidencia com o fuso da maquina
+# onde roda -- o CI roda em UTC, o desenvolvimento em America/Sao_Paulo, e
+# esta regressao so foi pega justamente por essa diferenca.
+_ZONE_CASES = [
+    (
+        "America/Sao_Paulo",
+        datetime(2026, 9, 15, 22, 0, tzinfo=timezone.utc),  # 19:00 local
+        datetime(2026, 9, 15, 23, 40, tzinfo=timezone.utc),  # 20:40 local
+    ),
+    (
+        "Asia/Tokyo",
+        datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc),  # 19:00 local
+        datetime(2026, 9, 15, 11, 40, tzinfo=timezone.utc),  # 20:40 local
+    ),
+]
+
+
+@pytest.mark.parametrize("tz_name,start_utc,end_utc", _ZONE_CASES)
+def test_missed_message_uses_schedule_timezone_not_host_timezone(
+    tmp_path: Path, backend: FakeBackend, tz_name, start_utc, end_utc
+):
+    clock = ManualClock(start_utc + timedelta(minutes=17))
+    engine = _make_engine(tmp_path, clock, backend, missed_tolerance_seconds=60)
+    engine._store.save(_schedule(tmp_path, timezone=tz_name))
+    engine.tick_once()
+
+    message = engine._store.get("sch_1").current_run.error_message
+    assert "19:00" in message
+
+
+@pytest.mark.parametrize("tz_name,start_utc,end_utc", _ZONE_CASES)
+def test_start_now_elapsed_window_message_uses_schedule_timezone(
+    tmp_path: Path, backend: FakeBackend, tz_name, start_utc, end_utc
+):
+    from meeting_transcriber.scheduling.models import ScheduleRun
+
+    clock = ManualClock(end_utc + timedelta(minutes=1))
+    engine = _make_engine(tmp_path, clock, backend)
+    schedule = _schedule(tmp_path, timezone=tz_name)
+    schedule.current_run = ScheduleRun(
+        occurrence_date="2026-09-15",
+        scheduled_start_at=start_utc.isoformat(),
+        scheduled_end_at=end_utc.isoformat(),
+        status=STATUS_SCHEDULED,
+    )
+    engine._store.save(schedule)
+
+    ok, message = engine.start_now("sch_1")
+    assert ok is False
+    assert "20:40" in message
+
+
 def test_ignore_missed_advances_recurring_schedule(tmp_path: Path, backend: FakeBackend):
     clock = ManualClock(START_UTC + timedelta(minutes=17))
     engine = _make_engine(tmp_path, clock, backend, missed_tolerance_seconds=60)

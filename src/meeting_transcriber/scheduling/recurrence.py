@@ -54,6 +54,21 @@ def resolve_zone(name: str) -> ZoneInfo:
         raise InvalidTimeZone(f"Timezone invalido ou desconhecido: {name!r}") from exc
 
 
+def to_schedule_zone(moment: datetime, tz_name: str) -> datetime:
+    """`moment` (aware, tipicamente UTC) no fuso do AGENDAMENTO -- nunca no
+    fuso do computador que roda o app. `start_time`/`end_time` de um
+    agendamento sao hora de parede nesse fuso; mensagens que citam um
+    horario precisam usar o mesmo referencial, senao "19:00" vira "22:00"
+    quando o PC esta em UTC (ou em qualquer fuso diferente do agendamento).
+    Um nome de fuso invalido nunca deveria chegar aqui (validado no
+    cadastro), mas se chegar, cai pro fuso local em vez de derrubar o tick
+    do scheduler so por causa de uma mensagem."""
+    try:
+        return moment.astimezone(resolve_zone(tz_name))
+    except InvalidTimeZone:
+        return moment.astimezone()
+
+
 def _parse_hhmm(value: str) -> dt_time:
     hour, _, minute = value.partition(":")
     return dt_time(hour=int(hour), minute=int(minute))
