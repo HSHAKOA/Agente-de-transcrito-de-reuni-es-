@@ -285,3 +285,131 @@ def test_dashboard_reads_and_meeting_finalize_never_raise_concurrently(repo: Mee
 
     errors = _run_concurrently([_finalize_meeting, _dashboard_poll, _dashboard_poll])
     assert errors == []
+
+
+# -- historico paginado: filtros combinaveis + contagem consistente ---------
+
+def _seed_history(repo: MeetingRepository):
+    """Cinco reunioes de ERP em dias/status diferentes, uma de Calculo e uma
+    excluida. `started_at` em ISO local (-03:00), como o app grava."""
+    rows = [
+        ("erp1", "Projeto ERP kickoff", "completed", "2026-09-14T19:00:00-03:00"),
+        ("erp2", "Projeto ERP revisao", "completed", "2026-09-15T23:30:00-03:00"),  # fim do dia 15
+        ("erp3", "Projeto ERP homologacao", "interrupted", "2026-09-16T00:10:00-03:00"),  # comeco do dia 16
+        ("erp4", "Projeto ERP treinamento", "failed", "2026-09-17T19:00:00-03:00"),
+        ("erp5", "Projeto ERP entrega", "completed", "2026-09-18T19:00:00-03:00"),
+        ("calc", "Aula de Calculo", "completed", "2026-09-15T08:00:00-03:00"),
+    ]
+    for id_, title, status, started in rows:
+        repo.upsert_meeting(_meeting(id_, title=title, status=status, started_at=started))
+    repo.upsert_meeting(_meeting("gone", title="Projeto ERP apagado", started_at="2026-09-15T10:00:00-03:00"))
+    repo.soft_delete_meeting("gone")
+
+
+def test_date_filter_includes_the_whole_last_day(repo: MeetingRepository):
+    """Regressao classica: `started_at <= '2026-09-15'` como texto exclui o
+    dia 15 inteiro ('2026-09-15T23:30...' > '2026-09-15')."""
+    _seed_history(repo)
+
+    ids = {m["id"] for m in repo.list_meetings(date_from="2026-09-15", date_to="2026-09-15")}
+
+    assert ids == {"erp2", "calc"}  # 23:30 do dia 15 entra; 00:10 do dia 16 nao
+
+
+def test_date_filter_open_ended_ranges(repo: MeetingRepository):
+    _seed_history(repo)
+
+    only_from = {m["id"] for m in repo.list_meetings(date_from="2026-09-17")}
+    only_to = {m["id"] for m in repo.list_meetings(date_to="2026-09-14")}
+
+    assert only_from == {"erp4", "erp5"}
+    assert only_to == {"erp1"}
+
+
+def test_meeting_without_started_at_is_excluded_by_any_date_filter(repo: MeetingRepository):
+    repo.upsert_meeting(_meeting("never", started_at=None))
+
+    assert repo.list_meetings(date_from="2000-01-01") == []
+    assert [m["id"] for m in repo.list_meetings()] == ["never"]
+
+
+def test_query_pagination_slices_the_matches_and_count_matches_the_filter(repo: MeetingRepository):
+    _seed_history(repo)
+
+    first = repo.list_meetings(limit=2, offset=0, query="ERP")
+    second = repo.list_meetings(limit=2, offset=2, query="ERP")
+    last = repo.list_meetings(limit=2, offset=4, query="ERP")
+
+    ids = [m["id"] for m in first + second + last]
+    assert ids == ["erp5", "erp4", "erp3", "erp2", "erp1"]  # mais recente primeiro, sem repetir nem faltar
+    assert repo.count_meetings(query="ERP") == 5  # exclui "gone" (soft delete) e "calc"
+
+
+def test_filters_combine_status_period_and_query(repo: MeetingRepository):
+    _seed_history(repo)
+
+    result = repo.list_meetings(query="ERP", status="completed", date_from="2026-09-15", date_to="2026-09-18")
+
+    assert [m["id"] for m in result] == ["erp5", "erp2"]
+    assert repo.count_meetings(query="ERP", status="completed", date_from="2026-09-15", date_to="2026-09-18") == 2
+
+
+def test_count_always_uses_the_same_filters_as_the_list(repo: MeetingRepository):
+    _seed_history(repo)
+    combos = [
+        {},
+        {"status": "failed"},
+        {"date_from": "2026-09-16"},
+        {"date_to": "2026-09-15"},
+        {"query": "Calculo"},
+        {"query": "ERP", "status": "interrupted"},
+    ]
+    for combo in combos:
+        assert repo.count_meetings(**combo) == len(repo.list_meetings(limit=100, **combo)), combo
+
+
+def test_query_matches_transcript_text_and_respects_filters(repo: MeetingRepository):
+    _seed_history(repo)
+    repo.replace_segments("erp1", [{"start_seconds": 0.0, "end_seconds": 5.0, "text": "vamos revisar o orcamento"}])
+    repo.replace_segments("erp5", [{"start_seconds": 0.0, "end_seconds": 5.0, "text": "orcamento aprovado"}])
+
+    assert {m["id"] for m in repo.list_meetings(query="orcamento")} == {"erp1", "erp5"}
+    assert [m["id"] for m in repo.list_meetings(query="orcamento", date_from="2026-09-18")] == ["erp5"]
+
+
+def test_soft_deleted_meetings_never_appear_in_query_results_or_counts(repo: MeetingRepository):
+    _seed_history(repo)
+
+    assert "gone" not in {m["id"] for m in repo.list_meetings(query="apagado")}
+    assert repo.count_meetings(query="apagado") == 0
+
+
+def test_like_fallback_treats_percent_and_underscore_literally(repo: MeetingRepository):
+    """Sem FTS5 a busca cai para LIKE; `%` e `_` do usuario nao podem virar curinga."""
+    repo._fts5 = False
+    repo.upsert_meeting(_meeting("a", title="Desconto de 100% aprovado"))
+    repo.upsert_meeting(_meeting("b", title="Desconto de 100 aprovado"))
+    repo.upsert_meeting(_meeting("c", title="arquivo a_b final"))
+    repo.upsert_meeting(_meeting("d", title="arquivo axb final"))
+
+    assert {m["id"] for m in repo.list_meetings(query="100%")} == {"a"}
+    assert {m["id"] for m in repo.list_meetings(query="a_b")} == {"c"}
+    assert repo.count_meetings(query="100%") == 1
+
+
+@pytest.mark.parametrize("use_fts5", [True, False])
+def test_query_is_never_interpreted_as_sql(repo: MeetingRepository, use_fts5):
+    if not use_fts5:
+        repo._fts5 = False
+    _seed_history(repo)
+
+    assert repo.list_meetings(query="'; DROP TABLE meetings; --") == []
+    assert repo.count_meetings(query='" OR 1=1 --') == 0
+    assert repo.count_meetings() == 6  # a tabela continua la
+
+
+def test_search_meetings_is_a_thin_wrapper_over_list_meetings(repo: MeetingRepository):
+    _seed_history(repo)
+
+    assert [m["id"] for m in repo.search_meetings("Calculo")] == ["calc"]
+    assert repo.search_meetings("   ") == []

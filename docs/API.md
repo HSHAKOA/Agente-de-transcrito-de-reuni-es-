@@ -376,10 +376,19 @@ encerra o agendamento (`once`).
 
 ### `GET /api/meetings`
 
-Query string: `limit` (padrão 20, máximo 100), `offset` (padrão 0),
-`status` (filtro exato), `q` (busca por texto — título ou conteúdo da
-transcrição; quando presente, `limit`/`offset` de paginação não se
-aplicam, só `limit`).
+Query string (todos opcionais e **combináveis**): `limit` (padrão 20,
+máximo 100), `offset` (padrão 0), `status` (filtro exato), `q` (busca por
+texto — título ou conteúdo da transcrição), `date_from` / `date_to` (dias
+`AAAA-MM-DD` do calendário local, **inclusivos nos dois extremos**: uma
+reunião às 23:30 de `date_to` entra). Ordem: mais recente primeiro.
+
+`total` é a contagem com **exatamente os mesmos filtros** da lista, então a
+paginação (`offset`/`limit` sobre `total`) fecha também durante uma busca.
+Um `date_from`/`date_to` malformado responde `400`
+(`{"ok": false, "message": "Filtro date_from invalido: use o formato AAAA-MM-DD."}`)
+em vez de ser ignorado — ignorar devolveria o histórico inteiro como se o
+filtro tivesse sido aplicado. Reuniões sem `started_at` ficam fora de
+qualquer filtro de data. Reuniões excluídas (soft delete) nunca aparecem.
 
 ```json
 {"meetings": [{"id": "...", "title": "...", "status": "completed", "...": "..."}], "total": 42, "limit": 20, "offset": 0}

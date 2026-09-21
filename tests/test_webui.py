@@ -1892,3 +1892,72 @@ def test_delete_meeting_never_touches_real_files(_isolated_webui, tmp_path):
 
     assert marker.exists()
     assert marker.read_text(encoding="utf-8") == "conteudo real"
+
+
+# -- historico: filtros de periodo, busca paginada e validacao (V1.0) --------
+
+def _seed_history_for_api(webui_module):
+    days = [("14", "completed"), ("15", "completed"), ("16", "failed"), ("17", "completed"), ("18", "interrupted")]
+    for i, (day, status) in enumerate(days, start=1):
+        _seed_meeting(
+            webui_module, f"h{i}", title=f"Projeto ERP parte {i}", status=status,
+            started_at=f"2026-09-{day}T19:00:00-03:00",
+        )
+    _seed_meeting(webui_module, "other", title="Aula de Calculo", started_at="2026-09-15T08:00:00-03:00")
+
+
+def test_get_meetings_search_is_paginated_and_total_counts_all_matches(_isolated_webui):
+    _seed_history_for_api(webui)
+
+    page2 = webui.get_meetings({"q": ["ERP"], "limit": ["2"], "offset": ["2"]})
+
+    assert page2["total"] == 5  # antes: len(pagina), a busca ignorava o offset
+    assert [m["id"] for m in page2["meetings"]] == ["h3", "h2"]
+    assert page2["offset"] == 2
+
+
+def test_get_meetings_filters_by_period_and_combines_with_status_and_query(_isolated_webui):
+    _seed_history_for_api(webui)
+
+    period = webui.get_meetings({"date_from": ["2026-09-15"], "date_to": ["2026-09-16"]})
+    assert {m["id"] for m in period["meetings"]} == {"h2", "h3", "other"}
+    assert period["total"] == 3
+
+    combined = webui.get_meetings({"q": ["ERP"], "status": ["completed"], "date_from": ["2026-09-15"]})
+    assert [m["id"] for m in combined["meetings"]] == ["h4", "h2"]
+    assert combined["total"] == 2
+
+
+def test_get_meetings_rejects_a_malformed_date_instead_of_ignoring_it(_isolated_webui):
+    from meeting_transcriber import validation as v
+
+    _seed_history_for_api(webui)
+
+    for bad in ("15/09/2026", "2026-13-40", "ontem", "2026-09-15T10:00"):
+        with pytest.raises(v.ValidationError):
+            webui.get_meetings({"date_from": [bad]})
+        with pytest.raises(v.ValidationError):
+            webui.get_meetings({"date_to": [bad]})
+
+
+def test_http_meetings_returns_400_for_a_malformed_date_and_200_otherwise(live_server, _isolated_webui):
+    _seed_history_for_api(webui)
+
+    def _get_status_and_body(path):
+        conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            return resp.status, json.loads(resp.read())
+        finally:
+            conn.close()
+
+    status, body = _get_status_and_body("/api/meetings?date_from=nao-e-data")
+    assert status == 400
+    assert body["ok"] is False
+    assert "date_from" in body["message"]
+
+    status, body = _get_status_and_body("/api/meetings?q=ERP&limit=2&offset=2&date_from=2026-09-14")
+    assert status == 200
+    assert body["total"] == 5
+    assert len(body["meetings"]) == 2

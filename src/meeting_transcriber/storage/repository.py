@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from .db import has_fts5
@@ -77,16 +77,28 @@ class MeetingRepository:
             row = self._conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
             return _row_to_dict(row) if row else None
 
-    def list_meetings(
+    def _filters(
         self,
-        limit: int = 50,
-        offset: int = 0,
-        status: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        include_deleted: bool = False,
-    ) -> List[Dict]:
-        clauses = []
+        status: Optional[str],
+        date_from: Optional[str],
+        date_to: Optional[str],
+        include_deleted: bool,
+        query: Optional[str],
+    ) -> "tuple[str, List]":
+        """Clausula WHERE + parametros compartilhados por `list_meetings` e
+        `count_meetings` -- a contagem SEMPRE usa os mesmos filtros da
+        listagem, senao a paginacao mostraria um total que nao bate com as
+        paginas. Todo valor vai como parametro (`?`); so trechos FIXOS de SQL
+        sao concatenados.
+
+        `date_from`/`date_to` sao dias locais `AAAA-MM-DD` (o mesmo dia do
+        calendario em que `started_at`, gravado em ISO local, comeca),
+        inclusivos nos dois extremos. `date_to` vira "antes do dia seguinte":
+        comparar `started_at <= '2026-09-21'` excluiria o dia 21 inteiro,
+        porque '2026-09-21T19:00...' e maior que '2026-09-21' como texto.
+        Uma reuniao sem `started_at` fica de fora de qualquer filtro de data.
+        """
+        clauses: List[str] = []
         params: List = []
         if not include_deleted:
             clauses.append("deleted_at IS NULL")
@@ -97,9 +109,32 @@ class MeetingRepository:
             clauses.append("started_at >= ?")
             params.append(date_from)
         if date_to:
-            clauses.append("started_at <= ?")
-            params.append(date_to)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            clauses.append("started_at < ?")
+            params.append((date.fromisoformat(date_to) + timedelta(days=1)).isoformat())
+        if query:
+            if self._fts5:
+                clauses.append("id IN (SELECT meeting_id FROM search_index WHERE search_index MATCH ?)")
+                params.append(_fts5_query(query))
+            else:
+                like = f"%{_escape_like(query)}%"
+                clauses.append(
+                    "(title LIKE ? ESCAPE '\\' OR id IN "
+                    "(SELECT meeting_id FROM meeting_segments WHERE text LIKE ? ESCAPE '\\'))"
+                )
+                params.extend([like, like])
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
+    def list_meetings(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        include_deleted: bool = False,
+        query: Optional[str] = None,
+    ) -> List[Dict]:
+        where, params = self._filters(status, date_from, date_to, include_deleted, (query or "").strip() or None)
         params.extend([limit, offset])
         with self._lock:
             rows = self._conn.execute(
@@ -107,15 +142,15 @@ class MeetingRepository:
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    def count_meetings(self, status: Optional[str] = None, include_deleted: bool = False) -> int:
-        clauses = []
-        params: List = []
-        if not include_deleted:
-            clauses.append("deleted_at IS NULL")
-        if status:
-            clauses.append("status = ?")
-            params.append(status)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    def count_meetings(
+        self,
+        status: Optional[str] = None,
+        include_deleted: bool = False,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> int:
+        where, params = self._filters(status, date_from, date_to, include_deleted, (query or "").strip() or None)
         with self._lock:
             row = self._conn.execute(f"SELECT COUNT(*) AS n FROM meetings {where}", params).fetchone()
         return row["n"]
@@ -169,34 +204,19 @@ class MeetingRepository:
         disponivel; cai para `LIKE` (mais lento, mas funcional) quando o
         SQLite do ambiente nao foi compilado com FTS5 (missao, secao
         E.11: fallback documentado, nunca uma dependencia externa tipo
-        Elasticsearch)."""
+        Elasticsearch). Para paginar e combinar com filtros de status/data,
+        use `list_meetings(query=...)` + `count_meetings(query=...)`."""
         query = (query or "").strip()
         if not query:
             return []
-        with self._lock:
-            if self._fts5:
-                rows = self._conn.execute(
-                    """
-                    SELECT m.* FROM meetings m
-                    WHERE m.deleted_at IS NULL AND m.id IN (
-                        SELECT DISTINCT meeting_id FROM search_index WHERE search_index MATCH ?
-                    )
-                    ORDER BY m.started_at DESC LIMIT ?
-                    """,
-                    (_fts5_query(query), limit),
-                ).fetchall()
-            else:
-                like = f"%{query}%"
-                rows = self._conn.execute(
-                    """
-                    SELECT DISTINCT m.* FROM meetings m
-                    LEFT JOIN meeting_segments s ON s.meeting_id = m.id
-                    WHERE m.deleted_at IS NULL AND (m.title LIKE ? OR s.text LIKE ?)
-                    ORDER BY m.started_at DESC LIMIT ?
-                    """,
-                    (like, like, limit),
-                ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        return self.list_meetings(limit=limit, query=query)
+
+
+def _escape_like(raw: str) -> str:
+    """Escapa `\\`, `%` e `_` para o fallback `LIKE ... ESCAPE '\\'` -- sem
+    isso, buscar "100%" ou "a_b" trataria `%`/`_` como curingas em vez de
+    texto literal."""
+    return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _fts5_query(raw: str) -> str:

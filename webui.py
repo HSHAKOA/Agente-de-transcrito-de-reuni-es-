@@ -31,7 +31,7 @@ import threading
 import time
 import webbrowser
 from collections import deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1061,10 +1061,28 @@ MEETINGS_PAGE_SIZE_DEFAULT = 20
 MEETINGS_PAGE_SIZE_MAX = 100
 
 
+def _parse_day_filter(name: str, raw) -> Optional[str]:
+    """`AAAA-MM-DD` validado no servidor (nunca confia no formato vindo do
+    cliente) e normalizado. Vazio/ausente -> sem filtro. Invalido levanta
+    `ValidationError` (a rota responde 400): ignorar em silencio um filtro
+    de data malformado devolveria o historico INTEIRO como se o filtro
+    tivesse sido aplicado."""
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        raise validation.ValidationError(f"Filtro {name} invalido: use o formato AAAA-MM-DD.") from None
+
+
 def get_meetings(query_params: dict) -> dict:
-    """GET /api/meetings -- lista paginada, com filtro opcional por
-    status e busca de texto (`q`). Nunca varre o filesystem na hora: le
-    so o indice SQLite (ver `POST /api/meetings/import` pra atualiza-lo)."""
+    """GET /api/meetings -- lista paginada, com filtros opcionais por
+    status (`status`), periodo (`date_from`/`date_to`, dias `AAAA-MM-DD`
+    inclusivos) e busca de texto (`q`), todos combinaveis. `total` e a
+    contagem com os MESMOS filtros da lista, entao a paginacao sempre bate.
+    Nunca varre o filesystem na hora: le so o indice SQLite (ver `POST
+    /api/meetings/import` pra atualiza-lo). Levanta `ValidationError` se um
+    filtro de data for malformado."""
     try:
         limit = min(MEETINGS_PAGE_SIZE_MAX, max(1, int(query_params.get("limit", [MEETINGS_PAGE_SIZE_DEFAULT])[0])))
     except (ValueError, IndexError):
@@ -1074,14 +1092,13 @@ def get_meetings(query_params: dict) -> dict:
     except (ValueError, IndexError):
         offset = 0
     status = (query_params.get("status", [None])[0]) or None
-    search = (query_params.get("q", [None])[0]) or None
+    search = ((query_params.get("q", [None])[0]) or "").strip() or None
+    date_from = _parse_day_filter("date_from", query_params.get("date_from", [None])[0])
+    date_to = _parse_day_filter("date_to", query_params.get("date_to", [None])[0])
 
-    if search:
-        meetings = meeting_repository.search_meetings(search, limit=limit)
-        total = len(meetings)
-    else:
-        meetings = meeting_repository.list_meetings(limit=limit, offset=offset, status=status)
-        total = meeting_repository.count_meetings(status=status)
+    filters = dict(status=status, date_from=date_from, date_to=date_to, query=search)
+    meetings = meeting_repository.list_meetings(limit=limit, offset=offset, **filters)
+    total = meeting_repository.count_meetings(**filters)
     return {"meetings": meetings, "total": total, "limit": limit, "offset": offset}
 
 
@@ -1299,7 +1316,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/schedules":
                 self._send_json(get_schedules())
             elif path == "/api/meetings":
-                self._send_json(get_meetings(query_params))
+                try:
+                    self._send_json(get_meetings(query_params))
+                except validation.ValidationError as exc:
+                    self._send_json({"ok": False, "message": str(exc)}, 400)
             elif _MEETING_EXPORT_PATH_RE.match(path):
                 match = _MEETING_EXPORT_PATH_RE.match(path)
                 fmt = (query_params.get("format", [""])[0]) or "markdown"
