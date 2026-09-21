@@ -103,12 +103,22 @@ export const api = {
     postJson<ActionResult>(`/api/schedules/${encodeURIComponent(id)}/ignore-missed`),
 
   // Fase E: historico e busca
-  getMeetings: (params?: { limit?: number; offset?: number; status?: string; q?: string }) => {
+  /** `dateFrom`/`dateTo`: dias `AAAA-MM-DD`, inclusivos (o backend responde 400 se malformados). */
+  getMeetings: (params?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    q?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }) => {
     const search = new URLSearchParams();
     if (params?.limit !== undefined) search.set("limit", String(params.limit));
     if (params?.offset !== undefined) search.set("offset", String(params.offset));
     if (params?.status) search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
+    if (params?.dateFrom) search.set("date_from", params.dateFrom);
+    if (params?.dateTo) search.set("date_to", params.dateTo);
     const query = search.toString();
     return getJson<MeetingsListResponse>(`/api/meetings${query ? `?${query}` : ""}`);
   },

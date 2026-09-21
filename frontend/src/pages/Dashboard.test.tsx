@@ -37,6 +37,7 @@ function renderDashboard(status: StatusResponse | null = baseStatus()) {
       onSelectMeeting={vi.fn()}
       onViewRecording={vi.fn()}
       onViewSchedules={vi.fn()}
+      onViewHistory={vi.fn()}
       onNewMeeting={vi.fn()}
       onViewSettings={vi.fn()}
     />,
@@ -167,6 +168,27 @@ describe("Dashboard", () => {
 
     expect(await screen.findByText("Reprocessando uma sessão interrompida…")).toBeInTheDocument();
     expect(screen.queryByText(/Gravando agora/)).not.toBeInTheDocument();
+  });
+
+  it("'Ver historico completo' abre a tela de historico", async () => {
+    api.getSchedules.mockResolvedValue({ schedules: [] });
+    api.getMeetings.mockResolvedValue({ meetings: [], total: 0, limit: 5, offset: 0 });
+    const onViewHistory = vi.fn();
+    render(
+      <Dashboard
+        status={baseStatus()}
+        onSelectMeeting={vi.fn()}
+        onViewRecording={vi.fn()}
+        onViewSchedules={vi.fn()}
+        onViewHistory={onViewHistory}
+        onNewMeeting={vi.fn()}
+        onViewSettings={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Ver histórico completo" }));
+
+    expect(onViewHistory).toHaveBeenCalledTimes(1);
   });
 
   it("mostra o banner de sessoes interrompidas quando o backend as lista", async () => {

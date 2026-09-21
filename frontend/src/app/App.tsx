@@ -1,7 +1,7 @@
-import { TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { useBackendStatus } from "../hooks/useBackendStatus";
 import { Dashboard } from "../pages/Dashboard";
+import { History } from "../pages/History";
 import { MeetingDetail } from "../pages/MeetingDetail";
 import { NewMeeting } from "../pages/NewMeeting";
 import { Recording } from "../pages/Recording";
@@ -12,7 +12,9 @@ import type { Schedule } from "../types/api";
 
 type View =
   | { name: "dashboard" }
-  | { name: "meeting"; id: string }
+  | { name: "history" }
+  /** `from`: pra onde "Voltar" leva (Dashboard ou Histórico). */
+  | { name: "meeting"; id: string; from: { name: "dashboard" } | { name: "history" } }
   /**
    * "starting": acabamos de mandar POST /api/start com sucesso, mas o
    * PRÓXIMO /api/status ainda não confirmou `running: true` -- pode levar
@@ -29,21 +31,19 @@ type View =
   | { name: "settings" };
 
 /**
- * A Fase F ganhou todas as telas nomeadas na missão (Dashboard, Nova
- * Reunião, Gravação, Detalhe da Reunião, Agendamentos + criar/editar,
- * Configurações -- ver `pages/`). `useBackendStatus` vive aqui (não em
- * cada tela) porque TODAS as telas precisam saber se há uma gravação
- * ativa -- uma só fonte de polling, nunca um `useBackendStatus()`
- * duplicado por tela.
+ * Telas do produto (ver `pages/`): Dashboard, Histórico, Nova Reunião,
+ * Gravação, Detalhe da Reunião, Agendamentos + criar/editar e
+ * Configurações. `useBackendStatus` vive aqui (não em cada tela) porque
+ * TODAS as telas precisam saber se há uma gravação ativa -- uma só fonte de
+ * polling, nunca um `useBackendStatus()` duplicado por tela.
  *
  * Navegação por `useState` simples de propósito -- um router de verdade
  * (`react-router`) não trouxe valor suficiente pro número de telas atual
  * (ver docs/PENDENCIAS.md se isso mudar).
  *
- * Já é possível criar, gravar, acompanhar ao vivo, parar, ver, exportar
- * e agendar uma reunião inteiramente por aqui -- mas `index.html`
- * continua sendo a interface de referência até a paridade funcional
- * completa ser demonstrada de ponta a ponta (ver docs/ROADMAP.md, Fase F).
+ * Esta é a interface ativa (servida por `webui.py`): criar, gravar,
+ * acompanhar ao vivo, parar, reprocessar sessões interrompidas, buscar no
+ * histórico, exportar e agendar acontecem inteiramente por aqui.
  */
 export function App() {
   const { status, refresh: refreshStatus } = useBackendStatus();
@@ -71,18 +71,15 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 antialiased">
-      <div className="mx-auto max-w-2xl px-4 pt-4">
-        <div className="flex items-center gap-2 rounded-lg border border-amber-800/60 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
-          <TriangleAlert className="size-4 shrink-0" />
-          <span>
-            Prévia (Fase F) — para iniciar/agendar uma gravação, use{" "}
-            <code className="rounded bg-black/30 px-1 py-0.5">http://127.0.0.1:8765</code>.
-          </span>
-        </div>
-      </div>
-
       {view.name === "meeting" && (
-        <MeetingDetail meetingId={view.id} onBack={() => setView({ name: "dashboard" })} />
+        <MeetingDetail meetingId={view.id} onBack={() => setView(view.from)} />
+      )}
+
+      {view.name === "history" && (
+        <History
+          onBack={() => setView({ name: "dashboard" })}
+          onSelectMeeting={(id) => setView({ name: "meeting", id, from: { name: "history" } })}
+        />
       )}
 
       {view.name === "recording" && view.phase === "starting" && (
@@ -124,9 +121,10 @@ export function App() {
       {view.name === "dashboard" && (
         <Dashboard
           status={status}
-          onSelectMeeting={(id) => setView({ name: "meeting", id })}
+          onSelectMeeting={(id) => setView({ name: "meeting", id, from: { name: "dashboard" } })}
           onViewRecording={() => setView({ name: "recording", phase: "active" })}
           onViewSchedules={() => setView({ name: "schedules" })}
+          onViewHistory={() => setView({ name: "history" })}
           onNewMeeting={() => setView({ name: "new-meeting" })}
           onViewSettings={() => setView({ name: "settings" })}
         />

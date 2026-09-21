@@ -1,6 +1,7 @@
 import { Calendar, CircleDot, FolderOpen, HardDrive, History, Search, Settings as SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Card } from "../components/Card";
+import { MeetingRow } from "../components/MeetingRow";
 import { RecoveryBanner } from "../components/RecoveryBanner";
 import { formatCountdown, useCountdown } from "../hooks/useCountdown";
 import { useRecentMeetings } from "../hooks/useRecentMeetings";
@@ -10,28 +11,6 @@ import { api } from "../services/api";
 import type { MeetingRecord, StatusResponse } from "../types/api";
 import { formatDateTime } from "../utils/formatDate";
 import { formatBytes } from "../utils/formatBytes";
-import { formatDuration } from "../utils/formatDuration";
-
-const STATUS_LABELS: Record<string, string> = {
-  completed: "Concluída",
-  recording: "Gravando",
-  processing: "Processando",
-  interrupted: "Interrompida",
-  failed: "Falhou",
-};
-
-function StatusPill({ status }: { status: string }) {
-  const label = STATUS_LABELS[status] ?? status;
-  const tone =
-    status === "completed"
-      ? "text-emerald-400 bg-emerald-950/40 border-emerald-800/50"
-      : status === "failed" || status === "interrupted"
-        ? "text-red-400 bg-red-950/40 border-red-800/50"
-        : "text-amber-400 bg-amber-950/40 border-amber-800/50";
-  return (
-    <span className={`rounded-full border px-2 py-0.5 text-xs ${tone}`}>{label}</span>
-  );
-}
 
 function NextRecordingCard({ onOpenSchedules }: { onOpenSchedules: () => void }) {
   const { schedules } = useSchedules();
@@ -91,25 +70,13 @@ function NextRecordingCard({ onOpenSchedules }: { onOpenSchedules: () => void })
   );
 }
 
-function MeetingRow({ meeting, onSelect }: { meeting: MeetingRecord; onSelect: (id: string) => void }) {
-  return (
-    <button
-      onClick={() => onSelect(meeting.id)}
-      className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-800/60"
-    >
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{meeting.title}</p>
-        <p className="mt-0.5 text-xs text-neutral-500">{formatDateTime(meeting.started_at)}</p>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="text-sm text-neutral-400">{formatDuration(meeting.duration_seconds)}</span>
-        <StatusPill status={meeting.status} />
-      </div>
-    </button>
-  );
-}
-
-function RecentMeetings({ onSelectMeeting }: { onSelectMeeting: (id: string) => void }) {
+function RecentMeetings({
+  onSelectMeeting,
+  onViewHistory,
+}: {
+  onSelectMeeting: (id: string) => void;
+  onViewHistory: () => void;
+}) {
   const { meetings, total, error } = useRecentMeetings(5);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MeetingRecord[] | null>(null);
@@ -144,9 +111,14 @@ function RecentMeetings({ onSelectMeeting }: { onSelectMeeting: (id: string) => 
         />
       </div>
 
-      <div className="mb-2 flex items-center gap-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">
-        <History className="size-3.5" />
-        {searchResults ? `Resultados (${searchResults.length})` : `Reuniões recentes (${total})`}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">
+          <History className="size-3.5" />
+          {searchResults ? `Resultados (${searchResults.length})` : `Reuniões recentes (${total})`}
+        </div>
+        <button onClick={onViewHistory} className="text-xs text-neutral-500 hover:text-neutral-300">
+          Ver histórico completo
+        </button>
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
@@ -170,18 +142,18 @@ function RecentMeetings({ onSelectMeeting }: { onSelectMeeting: (id: string) => 
 }
 
 /**
- * Primeira tela de produto de verdade da Fase F (as demais -- Nova
- * Reunião, Gravação, Histórico completo, Agendamentos, Configurações --
- * seguem o mesmo padrão: hook dedicado em `hooks/`, consumindo
- * `services/api.ts`, sem nenhuma lógica de domínio no componente). Ainda
- * somente-leitura: iniciar/parar gravação, criar agendamento, e escolher
- * pasta continuam exigindo o painel real em `index.html` por enquanto.
+ * Tela inicial: status de conexão, sessões interrompidas (recuperação),
+ * próxima gravação agendada, reuniões recentes com busca rápida (o
+ * histórico completo, paginado e filtrável, é a tela `History`) e a pasta
+ * ativa. Cada bloco usa um hook dedicado em `hooks/` sobre
+ * `services/api.ts`, sem lógica de domínio no componente.
  */
 interface DashboardProps {
   status: StatusResponse | null;
   onSelectMeeting: (id: string) => void;
   onViewRecording: () => void;
   onViewSchedules: () => void;
+  onViewHistory: () => void;
   onNewMeeting: () => void;
   onViewSettings: () => void;
 }
@@ -191,6 +163,7 @@ export function Dashboard({
   onSelectMeeting,
   onViewRecording,
   onViewSchedules,
+  onViewHistory,
   onNewMeeting,
   onViewSettings,
 }: DashboardProps) {
@@ -244,7 +217,7 @@ export function Dashboard({
 
       <div className="grid gap-4">
         <NextRecordingCard onOpenSchedules={onViewSchedules} />
-        <RecentMeetings onSelectMeeting={onSelectMeeting} />
+        <RecentMeetings onSelectMeeting={onSelectMeeting} onViewHistory={onViewHistory} />
 
         {settings && (
           <Card icon={<FolderOpen className="size-4 text-neutral-500" />} className="text-sm">
