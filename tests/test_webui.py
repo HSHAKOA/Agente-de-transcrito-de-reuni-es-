@@ -1243,6 +1243,33 @@ def test_http_post_rejects_disallowed_origin(live_server):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "bad_header,expected_status",
+    [(("Origin", "http://evil.example.com"), 403), (("Host", "evil.example.com"), 400)],
+)
+def test_http_rejection_is_delivered_even_when_the_body_arrives_late(live_server, bad_header, expected_status):
+    """Regressao: o servidor recusava Host/Origin sem consumir o corpo; se o
+    corpo chegasse depois dos cabecalhos (cliente lento, maquina sob carga) o
+    SO resetava a conexao e o cliente recebia ConnectionAbortedError em vez do
+    403/400 -- o que tornava `test_http_post_rejects_disallowed_origin`
+    instavel. O atraso aqui e deterministico."""
+    name, value = bad_header
+    conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
+    try:
+        body = b"{}"
+        conn.putrequest("POST", "/api/stop", skip_host=(name == "Host"))
+        conn.putheader(name, value)
+        conn.putheader("Content-Length", str(len(body)))
+        conn.endheaders()
+        time.sleep(0.15)  # o corpo chega DEPOIS do servidor ja ter decidido recusar
+        conn.send(body)
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == expected_status
+    finally:
+        conn.close()
+
+
 def test_http_post_allows_own_origin(live_server):
     conn = http.client.HTTPConnection("127.0.0.1", live_server, timeout=5)
     try:

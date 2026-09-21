@@ -1338,11 +1338,38 @@ class Handler(BaseHTTPRequestHandler):
             logger.exception("Erro tratando GET %s", self.path)
             self._send_json({"ok": False, "message": "Erro interno no painel."}, 500)
 
+    def _discard_body(self, length: int) -> None:
+        """Le (e descarta) o corpo declarado antes de responder uma
+        requisicao RECUSADA sem ter sido lida, ate um teto seguro -- nunca
+        mais que _DRAIN_CAP_BYTES, mesmo que o Content-Length declarado
+        minta. Sem isso, bytes nao lidos ficam pendurados no socket e o SO
+        reseta a conexao (Windows: ConnectionAbortedError no cliente) em vez
+        de entregar a resposta de erro -- reproduzido: com o corpo chegando
+        50 ms depois dos cabecalhos, 20 de 20 tentativas recebiam o reset em
+        vez do 403."""
+        remaining = min(length, _DRAIN_CAP_BYTES)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        self.close_connection = True
+
+    def _declared_body_length(self) -> int:
+        """Content-Length declarado, ou 0 se ausente/invalido/negativo (so
+        usado para decidir quanto descartar de uma requisicao recusada)."""
+        try:
+            return max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            return 0
+
     def do_POST(self):  # noqa: N802
         if not self._valid_host():
+            self._discard_body(self._declared_body_length())
             self.send_error(400, "Host invalido")
             return
         if not self._valid_origin():
+            self._discard_body(self._declared_body_length())
             self.send_error(403, "Origin nao permitida")
             return
 
@@ -1355,19 +1382,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "message": "Content-Length invalido."}, 400)
             return
         if length > MAX_BODY_BYTES:
-            # drena (e descarta) o corpo antes de responder, ate um teto
-            # seguro -- nunca mais que _DRAIN_CAP_BYTES, mesmo que o
-            # Content-Length declarado minta e seja muito maior. Sem isso,
-            # bytes nao lidos ficam pendurados no socket e o SO pode
-            # resetar a conexao abruptamente ao inves de entregar esta
-            # resposta 413 de forma limpa pro cliente.
-            remaining = min(length, _DRAIN_CAP_BYTES)
-            while remaining > 0:
-                chunk = self.rfile.read(min(65536, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-            self.close_connection = True
+            self._discard_body(length)  # ver o motivo em _discard_body
             self._send_json({"ok": False, "message": "Corpo da requisicao muito grande."}, 413)
             return
 
