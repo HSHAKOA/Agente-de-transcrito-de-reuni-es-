@@ -154,6 +154,11 @@ assumir que a gravação já parou.
 
 ## 5 — Recovery
 
+Uma sessão vira `interrupted` de duas formas: na varredura do **boot** do
+painel, ou **na hora**, quando o painel vê o processo gravador terminar sem
+ter finalizado a sessão. A checagem de PID (`is_pid_running`) só acontece
+depois, quando o usuário pede para reprocessar.
+
 ```mermaid
 flowchart TD
     BOOT[webui.py inicia] --> BIND{Bind da porta<br/>bem-sucedido?}
@@ -163,14 +168,18 @@ flowchart TD
     ROOTS --> SCAN[Varre cada raiz por sessões travadas]
     SCAN --> STATUS{status == recording/processing?}
     STATUS -->|não| SKIP[Ignora - sessão normal]
-    STATUS -->|sim| PIDCHECK{PID gravado ainda vivo?<br/>is_pid_running}
+    STATUS -->|sim| INTERRUPTED[Marca como interrupted<br/>sem apagar nada]
 
-    PIDCHECK -->|sim - camada de segurança, NÃO adoção| REFUSE[Recusa reprocessar<br/>evita 2 processos escrevendo junto]
-    PIDCHECK -->|não ou indeterminado| INTERRUPTED[Marca como interrupted]
+    EXIT[_reader_thread: o processo gravador terminou] --> LIVECHK{state.json ainda<br/>recording/processing?}
+    LIVECHK -->|não, sessão finalizada| SKIP2[Nada a fazer]
+    LIVECHK -->|sim, morreu sem finalizar| MARKNOW[mark_session_interrupted_if_live<br/>antes de liberar o slot]
+    MARKNOW --> INTERRUPTED
 
-    INTERRUPTED --> USERUI[Painel mostra banner de recuperação]
+    INTERRUPTED --> USERUI[Dashboard mostra o banner de recuperação]
     USERUI --> RESUME[POST /api/meetings/id/resume]
-    RESUME --> PENDING[Reprocessa só os blocos pendentes]
+    RESUME --> PIDCHECK{PID gravado ainda vivo?<br/>is_pid_running}
+    PIDCHECK -->|sim - camada de segurança, NÃO adoção| REFUSE[Recusa reprocessar<br/>evita 2 processos escrevendo junto]
+    PIDCHECK -->|não ou indeterminado| PENDING[Reprocessa só os blocos pendentes]
     PENDING --> COMPLETE2[completed]
 
     ROOTS --> ENGINESTART[Scheduler engine.start - tick imediato]
