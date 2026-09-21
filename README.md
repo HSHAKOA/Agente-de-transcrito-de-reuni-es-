@@ -236,3 +236,14 @@ fora, em `docs/PENDENCIAS.md` e `docs/ROADMAP.md`.
 
 Ver `docs/ROADMAP.md` (histórico de fases) e `docs/PENDENCIAS.md`
 (pendências priorizadas P0-P3).
+
+## Contribuir e licença
+
+Veja `CONTRIBUTING.md` (instalação, testes, estilo de commit, dados
+pessoais) e `docs/SECURITY.md` (modelo de ameaça e como reportar uma
+vulnerabilidade).
+
+**Este repositório ainda não tem `LICENSE`.** Sem uma licença explícita, o
+código continua com todos os direitos reservados ao autor — ninguém tem
+permissão para reutilizá-lo ou redistribuí-lo. Escolher a licença é uma
+decisão do proprietário, ainda pendente (ver `docs/PENDENCIAS.md`).

@@ -54,6 +54,19 @@ test(audio): verify one source crashing mid-recording doesn't hang the other
 Nunca `"update"`, `"fix stuff"`, `"final"` — a mensagem deve explicar o
 *porquê*, não só repetir o diff.
 
+## Dados pessoais
+
+Áudio e transcrições de reuniões são dados pessoais e **nunca** entram no
+repositório. O `.gitignore` já ignora `data/` e as pastas de reunião
+(`AAAA-MM-DD_HHMM_Titulo_xxxxxx/`) em qualquer profundidade, mas confira o
+`git status` antes de commitar e prefira `git add <caminho>` a `git add -A`.
+Em issues e PRs, não cole trechos de transcrições nem anexe áudio.
+
+## Issues, PRs e segurança
+
+Use os modelos em `.github/` (bug, sugestão, pull request). Para uma
+vulnerabilidade, **não** abra uma issue pública: veja `docs/SECURITY.md`.
+
 ## Princípios do projeto
 
 - **Local-first / offline-first**: nenhuma dependência de nuvem

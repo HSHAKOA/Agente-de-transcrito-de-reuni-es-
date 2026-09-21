@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vulnerabilidade de segurança
+    url: https://github.com/HSHAKOA/Agente-de-transcrito-de-reuni-es-/security/advisories/new
+    about: Não abra uma issue pública com detalhes de exploração. Veja docs/SECURITY.md.

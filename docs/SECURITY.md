@@ -112,13 +112,64 @@ dele finalizar o `.md`/gravar o bloco parcial. Ver `docs/ARCHITECTURE.md`
   usa `subprocess.Popen(["xdg-open"/"open", path])` — sempre lista, nunca
   string montada.
 
+## Controles adicionados depois da Fase B (auditoria pos-missao)
+
+Cada item abaixo foi verificado no codigo, nao so descrito:
+
+- **Origin em todo `POST`** (`Handler._valid_origin`): uma pagina de outro
+  site nao consegue, via `fetch` no navegador do usuario, chamar
+  `POST /api/stop` ou `/api/start` — so `127.0.0.1:8765`, `localhost:8765` e o
+  dev server do Vite (`localhost:5173`) sao aceitos; qualquer outra origem
+  recebe `403`. Requisicoes **sem** `Origin` (curl, testes automatizados) sao
+  permitidas de proposito: navegadores sempre mandam `Origin` em `fetch`
+  cross-origin, entao a ausencia dele significa "nao veio de uma pagina".
+- **Nenhum header CORS** e enviado: outras origens nao conseguem *ler* as
+  respostas da API no navegador.
+- **`open_folder` restrito**: so abre caminhos dentro de uma raiz de reunioes
+  ja usada (`settings.get_known_meeting_roots`); nunca um caminho arbitrario
+  vindo do cliente.
+- **Arquivos estaticos do React**: `_serve_frontend_asset` resolve o caminho e
+  recusa qualquer coisa fora de `frontend/dist/` (path traversal).
+- **Exportacao**: o nome do arquivo baixado e `<meeting_id validado>.<extensao
+  fixa>`; nada vem do cliente.
+- **SQL**: todo valor vai por parametro (`?`) e so trechos fixos de SQL sao
+  concatenados; a busca FTS5 escapa a entrada do usuario e o fallback `LIKE`
+  escapa `%`, `_` e `\` (testado contra `'; DROP TABLE ...` nos dois caminhos).
+- **Filtros de data invalidos** em `GET /api/meetings` respondem `400` em vez
+  de serem ignorados.
+- **Comando do subprocesso** nao e mais exposto no log devolvido pela API.
+- **Corpo de requisicao** limitado a 1 MB (drenagem com teto), JSON invalido
+  ou nao-objeto respondem `400`.
+
+## Dados pessoais e privacidade
+
+Audio e transcricoes sao dados pessoais e **nunca** entram no repositorio:
+`data/` e ignorado, e as pastas de reuniao (`AAAA-MM-DD_HHMM_Titulo_xxxxxx/`)
+sao ignoradas em qualquer profundidade (`.gitignore`) — o usuario pode ter
+escolhido uma raiz dentro da propria pasta do projeto. O historico do Git foi
+conferido: so contem codigo, testes e documentacao. Nada e enviado a servicos
+externos (o unico acesso a rede e o download do modelo Whisper). Ao abrir uma
+issue, **nao cole trechos de transcricoes nem anexe audio**.
+
+## Como reportar uma vulnerabilidade
+
+Nao abra uma issue publica com detalhes de exploracao. Use o **"Report a
+vulnerability"** da aba *Security* do repositorio no GitHub (relato privado);
+se ele nao estiver disponivel, abra uma issue **sem detalhes tecnicos**
+pedindo um canal privado. Nao ha SLA formal: e um projeto academico/pessoal
+mantido por uma pessoa.
+
+> Pendencia do proprietario: habilitar *Private vulnerability reporting* em
+> *Settings > Code security* do repositorio — depende de uma configuracao no
+> GitHub que nao da pra fazer por codigo.
+
 ## O que fica pra depois (fora do escopo desta fase)
 
-- Autenticacao/token no painel (hoje qualquer processo que consiga falar com
-  `127.0.0.1:8765` pode iniciar/parar gravacoes — aceitavel pro modelo de
+- Autenticacao/token no painel (hoje qualquer processo local que consiga falar
+  com `127.0.0.1:8765` pode iniciar/parar gravacoes — aceitavel pro modelo de
   ameaca atual de "um usuario, uma maquina", mas relevante se o produto
-  crescer).
-- Rate limiting / CSRF token dedicado (a checagem de `Host` cobre o caso
-  mais comum de DNS rebinding, mas nao e uma defesa CSRF completa).
-- Cabecalhos como `Content-Security-Policy` completos no `index.html`
-  servido (hoje so `X-Content-Type-Options: nosniff` e enviado).
+  crescer). Isto inclui processos sem `Origin`, que a checagem acima permite.
+- Rate limiting.
+- Cabecalhos como `Content-Security-Policy` completos no `index.html` e no
+  build do React servidos (hoje so `X-Content-Type-Options: nosniff` e
+  enviado).
