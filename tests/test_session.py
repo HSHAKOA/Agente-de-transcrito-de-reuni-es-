@@ -19,6 +19,7 @@ from meeting_transcriber.session import (
     is_valid_meeting_id,
     list_sessions,
     mark_interrupted_sessions,
+    mark_session_interrupted_if_live,
     new_meeting_id,
     sanitize_title_for_folder,
 )
@@ -288,6 +289,56 @@ def test_mark_interrupted_sessions_tolerates_corrupted_state_json(tmp_path: Path
 
     # nao deve levantar excecao nem derrubar o scan das demais sessoes
     assert mark_interrupted_sessions(tmp_path) == []
+
+
+@pytest.mark.parametrize("live_status_setup", ["recording", "processing"])
+def test_mark_session_interrupted_if_live_marks_a_live_session(tmp_path: Path, live_status_setup):
+    session = MeetingSession.create(base_dir=tmp_path, title="Morreu", model="small", language="pt", device="cpu")
+    session.mark_recording()
+    if live_status_setup == "processing":
+        session.mark_chunk_recorded(index=0, path=session.chunks_dir / "chunk_00000.wav", start_offset_seconds=0.0, duration_seconds=5.0)
+        with session._lock:
+            session._state["status"] = STATUS_PROCESSING
+            session._save_state()
+
+    result = mark_session_interrupted_if_live(session.meeting_dir)
+
+    assert result is not None
+    assert result["status"] == STATUS_INTERRUPTED
+    assert MeetingSession.load(session.meeting_dir).state["status"] == STATUS_INTERRUPTED
+
+
+def test_mark_session_interrupted_if_live_never_touches_a_finished_session(tmp_path: Path):
+    done = MeetingSession.create(base_dir=tmp_path, title="Completa", model="small", language="pt", device="cpu")
+    done.mark_recording()
+    done.mark_completed()
+
+    assert mark_session_interrupted_if_live(done.meeting_dir) is None
+    assert MeetingSession.load(done.meeting_dir).state["status"] == STATUS_COMPLETED
+
+
+def test_mark_session_interrupted_if_live_keeps_chunk_records(tmp_path: Path):
+    """Marcar como interrompida nunca apaga nem altera os chunks: e o que
+    permite o `--resume` retranscrever so os pendentes."""
+    session = MeetingSession.create(base_dir=tmp_path, title="Com chunks", model="small", language="pt", device="cpu")
+    session.mark_recording()
+    session.mark_chunk_recorded(index=0, path=session.chunks_dir / "chunk_00000.wav", start_offset_seconds=0.0, duration_seconds=5.0)
+    session.mark_chunk_transcribed(0, 5.0)
+    session.mark_chunk_recorded(index=1, path=session.chunks_dir / "chunk_00001.wav", start_offset_seconds=5.0, duration_seconds=2.0)
+
+    mark_session_interrupted_if_live(session.meeting_dir)
+
+    chunks = MeetingSession.load(session.meeting_dir).state["chunks"]
+    assert [c["status"] for c in chunks] == [CHUNK_TRANSCRIBED, "recorded"]
+
+
+def test_mark_session_interrupted_if_live_tolerates_missing_or_corrupted_state(tmp_path: Path):
+    assert mark_session_interrupted_if_live(tmp_path / "nao-existe") is None
+
+    bad_dir = tmp_path / "corrompida"
+    bad_dir.mkdir()
+    (bad_dir / "state.json").write_text("{ nao e json valido", encoding="utf-8")
+    assert mark_session_interrupted_if_live(bad_dir) is None
 
 
 def test_list_sessions_orders_most_recent_first(tmp_path: Path):

@@ -1484,6 +1484,92 @@ def test_reader_thread_auto_import_failure_never_raises_or_touches_real_files(_i
         assert webui.state["proc"] is None
 
 
+# -- sessao cujo processo morreu sem finalizar (recovery imediato) ----------
+
+def _new_session_with_untranscribed_chunk(tmp_path, meeting_id):
+    from meeting_transcriber.session import MeetingSession
+
+    session = MeetingSession.create(
+        base_dir=webui.MEETINGS_DIR, title="Aula Cortada", model="small", language="pt", device="cpu",
+        transcript_path=tmp_path / f"{meeting_id}.md", meeting_id=meeting_id,
+    )
+    (tmp_path / f"{meeting_id}.md").write_text("# T\n\n## Transcricao\n\n**[00:00:00]** Ola.\n\n", encoding="utf-8")
+    session.mark_recording()
+    # gravado, nunca transcrito: o que sobra quando o processo morre no meio da fila do Whisper
+    session.mark_chunk_recorded(
+        index=0, path=session.chunks_dir / "chunk_00000.wav", start_offset_seconds=0.0, duration_seconds=5.0
+    )
+    return session
+
+
+def _log_lines() -> list:
+    with webui.state_lock:
+        return list(webui.state["log"])
+
+
+def test_reader_thread_marks_session_interrupted_when_process_dies_before_finalizing(_isolated_webui, tmp_path):
+    """Regressao real: quando o encerramento gracioso estoura o prazo, o
+    painel faz terminate() e o processo morre sem atualizar state.json --
+    a reuniao ficava em "recording"/"processing" ate o proximo boot do
+    painel, e /api/recovery (que so lista "interrupted") nunca a mostrava."""
+    from meeting_transcriber.session import STATUS_INTERRUPTED, MeetingSession
+
+    session = _new_session_with_untranscribed_chunk(tmp_path, "cut-short-1")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(session.meeting_dir)
+
+    proc = webui.subprocess.Popen(["fake"])
+    proc.finish(1)  # morte forcada: codigo != 0, state.json ainda "recording"
+    webui._reader_thread(proc)
+
+    assert MeetingSession.load(session.meeting_dir).state["status"] == STATUS_INTERRUPTED
+    # o indice do historico reflete o status real (a importacao roda DEPOIS da marca)
+    assert webui.meeting_repository.get_meeting("cut-short-1")["status"] == STATUS_INTERRUPTED
+    assert [s["meeting_id"] for s in webui.get_recovery()["sessions"]] == ["cut-short-1"]
+    assert any("Reprocessar" in line for line in _log_lines())
+    with webui.state_lock:
+        assert webui.state["proc"] is None  # o slot foi liberado normalmente
+
+
+def test_reader_thread_leaves_a_properly_finished_session_alone(_isolated_webui, tmp_path):
+    from meeting_transcriber.session import STATUS_COMPLETED, MeetingSession
+
+    session = _new_session_with_untranscribed_chunk(tmp_path, "finished-1")
+    session.mark_chunk_transcribed(0, 5.0)
+    session.mark_completed()
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(session.meeting_dir)
+
+    proc = webui.subprocess.Popen(["fake"])
+    proc.finish(0)
+    webui._reader_thread(proc)
+
+    assert MeetingSession.load(session.meeting_dir).state["status"] == STATUS_COMPLETED
+    assert webui.get_recovery()["sessions"] == []
+    assert not any("Reprocessar" in line for line in _log_lines())
+
+
+def test_reader_thread_still_frees_the_slot_if_marking_interrupted_fails(_isolated_webui, tmp_path, monkeypatch):
+    """Uma falha de disco ao marcar a sessao nunca pode deixar o painel
+    preso em "gravando" -- o proximo boot ainda pega a sessao."""
+    session = _new_session_with_untranscribed_chunk(tmp_path, "disk-error-1")
+    with webui.state_lock:
+        webui.state["meeting_dir"] = str(session.meeting_dir)
+
+    def _boom(_meeting_dir):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(webui, "mark_session_interrupted_if_live", _boom)
+
+    proc = webui.subprocess.Popen(["fake"])
+    proc.finish(1)
+    webui._reader_thread(proc)  # nao pode levantar
+
+    with webui.state_lock:
+        assert webui.state["proc"] is None
+        assert webui.state["stopping"] is False
+
+
 # -- historico e busca (Fase E) -------------------------------------------
 
 def _seed_meeting(webui_module, meeting_id="m1", **overrides):

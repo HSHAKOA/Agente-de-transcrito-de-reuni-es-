@@ -70,6 +70,7 @@ from meeting_transcriber.session import (  # noqa: E402
     is_pid_running,
     list_sessions,
     mark_interrupted_sessions,
+    mark_session_interrupted_if_live,
     new_meeting_id,
 )
 
@@ -289,12 +290,35 @@ def _reader_thread(proc: subprocess.Popen) -> None:
         _log(raw_line)
     exit_code = proc.wait()
     with state_lock:
+        meeting_dir = state["meeting_dir"]
+
+    # Se o processo morreu sem finalizar a sessao (terminate()/kill() apos o
+    # prazo do encerramento gracioso, ou uma queda), `state.json` ficou em
+    # "processing"/"recording" -- e `/api/recovery` so lista "interrupted",
+    # que ate aqui so era marcado no proximo boot do painel. Marca agora,
+    # ANTES de liberar o slot abaixo: enquanto `state["proc"]` ainda esta
+    # setado, nenhum /api/start ou /resume consegue tocar nesta reuniao.
+    # Uma sessao que terminou direito (completed/interrupted/failed) nao e
+    # alterada. Nunca levanta: uma falha aqui so deixa de marcar (o proximo
+    # boot ainda pega), nunca impede o slot de ser liberado.
+    interrupted_now = None
+    if meeting_dir:
+        try:
+            interrupted_now = mark_session_interrupted_if_live(Path(meeting_dir))
+        except OSError:
+            logger.warning("Nao foi possivel marcar a sessao %s como interrompida.", meeting_dir, exc_info=True)
+
+    with state_lock:
         state["finished_at"] = time.time()
         state["exit_code"] = exit_code
-        meeting_dir = state["meeting_dir"]
         state["proc"] = None  # libera pra um novo /api/start poder rodar
         state["stopping"] = False
     _log(f"[painel] processo encerrado (codigo {exit_code}).")
+    if interrupted_now is not None:
+        _log(
+            "[painel] a reuniao nao terminou de ser transcrita (o processo encerrou antes de finalizar): "
+            "o audio esta salvo; use Reprocessar para completar a transcricao."
+        )
 
     # Indexacao automatica no historico (correcao pos-auditoria P1-2): antes
     # disso, a UNICA forma de uma reuniao aparecer no Dashboard/historico/

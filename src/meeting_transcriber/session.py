@@ -341,6 +341,34 @@ class MeetingSession:
             ]
 
 
+def mark_session_interrupted_if_live(meeting_dir: Path) -> Optional[dict]:
+    """Marca UMA sessao como "interrupted" se ainda estiver num estado "ao
+    vivo" (recording/processing) e devolve o estado resultante; devolve None
+    quando nao ha nada a marcar (sem state.json, ilegivel, ou ja
+    finalizada) — nenhum chunk e apagado.
+
+    Quem chama SABE que o processo gravador desta pasta ja morreu (ex.: o
+    painel acabou de ver o subprocesso terminar) — ao contrario da varredura
+    de boot (`mark_interrupted_sessions`), que so infere isso. Um
+    `terminate()`/`kill()` (o encerramento gracioso estourou o prazo) ou uma
+    queda nunca deixam o processo atualizar `state.json`: sem esta marca a
+    reuniao ficava em "processing" ate o proximo boot do painel e
+    `/api/recovery` nunca a listava.
+    """
+    if not (meeting_dir / "state.json").exists():
+        return None
+    try:
+        session = MeetingSession.load(meeting_dir)
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+    if session.state.get("status") not in LIVE_STATUSES:
+        return None
+    with session._lock:
+        session._state["status"] = STATUS_INTERRUPTED
+        session._save_state()
+    return session.state
+
+
 def mark_interrupted_sessions(base_dir: Path) -> List[dict]:
     """Varre `base_dir` procurando sessoes travadas num estado "ao vivo"
     (recording/processing) — sinal de que o processo anterior morreu sem
@@ -348,25 +376,18 @@ def mark_interrupted_sessions(base_dir: Path) -> List[dict]:
     apagar nenhum chunk) e devolve os estados encontrados.
 
     Deve rodar uma unica vez, na inicializacao do painel/app — nunca durante
-    uma sessao ativa, senao marcaria a propria sessao em andamento.
+    uma sessao ativa, senao marcaria a propria sessao em andamento. Para
+    marcar uma sessao cujo processo o chamador SABE que morreu, use
+    `mark_session_interrupted_if_live`.
     """
     if not base_dir.exists():
         return []
 
     recovered = []
     for meeting_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
-        state_path = meeting_dir / "state.json"
-        if not state_path.exists():
-            continue
-        try:
-            session = MeetingSession.load(meeting_dir)
-        except (json.JSONDecodeError, OSError, KeyError):
-            continue
-        if session.state.get("status") in LIVE_STATUSES:
-            with session._lock:
-                session._state["status"] = STATUS_INTERRUPTED
-                session._save_state()
-            recovered.append(session.state)
+        state = mark_session_interrupted_if_live(meeting_dir)
+        if state is not None:
+            recovered.append(state)
     return recovered
 
 
