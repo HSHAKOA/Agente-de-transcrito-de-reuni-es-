@@ -151,10 +151,7 @@ export function Schedules({ onBack, onNew, onEdit }: SchedulesProps) {
       <Card icon={<Calendar className="size-4 text-neutral-500" />} className="mt-4">
         {schedules === null && <p className="text-sm text-neutral-500">Carregando…</p>}
         {schedules !== null && visible.length === 0 && (
-          <p className="text-sm text-neutral-500">
-            Nenhum agendamento ativo — crie um pelo painel em{" "}
-            <code className="rounded bg-black/30 px-1 py-0.5 text-xs">http://127.0.0.1:8765</code>.
-          </p>
+          <p className="text-sm text-neutral-500">Nenhum agendamento ativo — use “+ Novo agendamento” para criar um.</p>
         )}
         {visible.length > 0 && (
           <div>

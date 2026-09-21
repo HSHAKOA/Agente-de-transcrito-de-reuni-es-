@@ -27,18 +27,22 @@ export function Settings({ onBack }: SettingsProps) {
   const [systemDeviceId, setSystemDeviceId] = useState("");
   const [microphoneDeviceId, setMicrophoneDeviceId] = useState("");
   const [saved, setSaved] = useState(false);
+  const [audioConfigError, setAudioConfigError] = useState<string | null>(null);
 
   const [manualPath, setManualPath] = useState("");
   const [folderBusy, setFolderBusy] = useState(false);
   const [folderMessage, setFolderMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getAudioConfig().then((cfg) => {
-      setCaptureSystem(cfg.capture_system);
-      setCaptureMicrophone(cfg.capture_microphone);
-      setSystemDeviceId(cfg.system_device_id ?? "");
-      setMicrophoneDeviceId(cfg.microphone_device_id ?? "");
-    });
+    api
+      .getAudioConfig()
+      .then((cfg) => {
+        setCaptureSystem(cfg.capture_system);
+        setCaptureMicrophone(cfg.capture_microphone);
+        setSystemDeviceId(cfg.system_device_id ?? "");
+        setMicrophoneDeviceId(cfg.microphone_device_id ?? "");
+      })
+      .catch(() => setAudioConfigError("Não foi possível carregar as fontes de áudio padrão."));
   }, []);
 
   async function handleChooseFolder() {
@@ -72,13 +76,18 @@ export function Settings({ onBack }: SettingsProps) {
 
   async function handleSaveAudioDefaults() {
     setSaved(false);
-    await api.setAudioConfig({
-      capture_system: captureSystem,
-      capture_microphone: captureMicrophone,
-      system_device_id: systemDeviceId || null,
-      microphone_device_id: microphoneDeviceId || null,
-    });
-    setSaved(true);
+    setAudioConfigError(null);
+    try {
+      await api.setAudioConfig({
+        capture_system: captureSystem,
+        capture_microphone: captureMicrophone,
+        system_device_id: systemDeviceId || null,
+        microphone_device_id: microphoneDeviceId || null,
+      });
+      setSaved(true);
+    } catch {
+      setAudioConfigError("Não foi possível salvar as fontes de áudio padrão.");
+    }
   }
 
   return (
@@ -135,6 +144,11 @@ export function Settings({ onBack }: SettingsProps) {
 
       <Card title="Fontes de áudio padrão" className="mt-4">
         {devicesError && <p className="mb-2 text-sm text-red-400">{devicesError}</p>}
+        {audioConfigError && (
+          <p role="alert" className="mb-2 text-sm text-red-400">
+            {audioConfigError}
+          </p>
+        )}
         <p className="mb-3 text-xs text-neutral-500">
           Usado quando uma nova reunião não especifica fontes explicitamente.
         </p>
