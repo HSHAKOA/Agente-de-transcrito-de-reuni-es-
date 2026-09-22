@@ -2080,5 +2080,24 @@ def test_runtime_health_reports_every_missing_package_at_once():
     )
     assert len(problems) == 4
     assert {"soundcard", "soundfile", "numpy", "faster_whisper"} == {
-        p.split("“")[1].split("”")[0] for p in problems
+        p.split("'")[1] for p in problems
     }
+
+
+def test_runtime_health_messages_survive_the_windows_console():
+    """Estas mensagens sao impressas com `print()` no console do `iniciar.bat`,
+    que nao usa UTF-8 (cp1252/cp850). Travessao e aspas curvas viram `?`/lixo
+    exatamente na mensagem que precisa ser lida -- aconteceu na primeira
+    versao. Mantem tudo em ASCII."""
+
+    class _Sched:
+        timezone = "Zona/Inexistente"
+
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing("soundcard", "soundfile", "numpy", "faster_whisper"),
+        list_schedules=lambda: [_Sched()],
+        frontend_built=lambda: False,
+    )
+    assert len(problems) == 6  # 4 pacotes + fuso + build
+    for message in problems:
+        message.encode("ascii")  # levanta UnicodeEncodeError se escapar algo

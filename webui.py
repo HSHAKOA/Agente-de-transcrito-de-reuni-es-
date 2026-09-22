@@ -1607,7 +1607,7 @@ def check_runtime_health(
             available = False
         if not available:
             problems.append(
-                f"O pacote “{module}” nao esta instalado neste Python — sem ele o painel "
+                f"O pacote '{module}' nao esta instalado neste Python - sem ele o painel "
                 f"nao consegue {purpose}. Rode: pip install -r requirements.txt"
             )
 
@@ -1625,7 +1625,7 @@ def check_runtime_health(
             resolve_zone(name)
         except InvalidTimeZone:
             problems.append(
-                f"O fuso “{name}” nao resolve neste Python — no Windows o banco de fusos vem "
+                f"O fuso '{name}' nao resolve neste Python - no Windows o banco de fusos vem "
                 "do pacote tzdata. Enquanto isso nao for corrigido, agendamentos nao disparam. "
                 "Rode: pip install -r requirements.txt"
             )
@@ -1633,7 +1633,7 @@ def check_runtime_health(
     built = frontend_built() if frontend_built is not None else _frontend_build_available()
     if not built:
         problems.append(
-            "O build do React (frontend/dist/) nao existe — o painel legado sera servido no lugar. "
+            "O build do React (frontend/dist/) nao existe - o painel legado sera servido no lugar. "
             "Para gerar: cd frontend && npm install && npm run build"
         )
 
