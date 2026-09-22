@@ -121,16 +121,28 @@ interrompidas.
 
 ```text
 V0.9 — Academic Demo                                        ✅ core funcional
-V1.0 — Open Source Stable                                   ⏳ falta só decisões do proprietário + CI verde confirmado
-      histórico ✅ · testes ✅ · estrutura open source ✅ · instalação reproduzível ⏳ · estabilidade ✅
+V1.0 — Open Source Stable                                   ⏳ falta validação com hardware real
+      histórico ✅ · testes ✅ · estrutura open source ✅ · licença ✅ · CI verde ✅ · estabilidade ✅
 V1.1 — Meeting Intelligence      resumo, tarefas, decisões, tópicos      (docs/INTELLIGENCE.md)
 V1.2 — Speakers                  atribuição por segmento; diarização opcional
 V1.3 — Automação                 Windows Task Scheduler; integração com calendários (ICS/Google/Outlook)
 V2.0 — Knowledge Base            busca semântica; chat com uma reunião / entre reuniões
 ```
 
-O que ainda separa o estado atual da V1.0 está em `docs/PENDENCIAS.md`
-("O que separa o estado atual da V1.0"): confirmar o CI verde após o push,
-validar o encerramento/reprocessamento com uma gravação longa real, e as
-decisões do proprietário (licença, relato privado de vulnerabilidade).
-Nada de V1.1+ entra antes disso.
+Fechado desde o marco anterior: `LICENSE` (Apache-2.0, com a auditoria de
+dependências em `docs/LICENSES.md`), relato privado de vulnerabilidade
+habilitado, e o CI **verde** — pela primeira vez na história do projeto, e
+agora sem nenhum aviso de depreciação.
+
+O que ainda separa a V1.0 está em `docs/PENDENCIAS.md`: validar com
+**hardware real** o encerramento gracioso e o reprocessamento (só rodaram
+com dublês), e reprocessar a aula de 21/09 que ficou em 9/11 blocos. Nada de
+V1.1+ entra antes disso.
+
+### Trilha visual (paralela, não bloqueia a V1.0)
+
+`DESIGN.md` e `MOTION.md` são a autoridade visual do produto. A
+implementação vem depois do núcleo fechado, nesta ordem: tokens
+centralizados no `index.css` (hoje o arquivo tem uma linha só), respeito a
+`prefers-reduced-motion`, nomes acessíveis nos campos de formulário e
+regiões vivas — os três primeiros itens de `docs/PENDENCIAS.md` P2-11.
