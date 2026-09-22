@@ -1988,3 +1988,97 @@ def test_http_meetings_returns_400_for_a_malformed_date_and_200_otherwise(live_s
     assert status == 200
     assert body["total"] == 5
     assert len(body["meetings"]) == 2
+
+
+# -- checagem de ambiente na inicializacao -----------------------------------
+#
+# Regressao de um incidente real (21/09/2026): o painel foi iniciado com o
+# Python global em vez do `.venv`. Sem `soundcard` e sem `tzdata` ele subiu
+# normalmente -- tela, historico, tudo aparentemente bem -- e so falhou seis
+# minutos depois, quando a aula agendada tentou gravar. Nada na interface
+# indicava o problema. Esta checagem troca o silencio por uma mensagem.
+
+
+def _spec_missing(*missing):
+    """Dublê de importlib.util.find_spec: finge que certos pacotes sumiram,
+    sem desinstalar nada de verdade."""
+
+    def _find_spec(name):
+        return None if name in missing else object()
+
+    return _find_spec
+
+
+def test_runtime_health_is_silent_when_everything_is_present():
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing(),
+        list_schedules=lambda: [],
+        frontend_built=lambda: True,
+    )
+    assert problems == []
+
+
+def test_runtime_health_reports_the_missing_audio_backend():
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing("soundcard"),
+        list_schedules=lambda: [],
+        frontend_built=lambda: True,
+    )
+    assert len(problems) == 1
+    assert "soundcard" in problems[0]
+    assert "pip install -r requirements.txt" in problems[0]
+
+
+def test_runtime_health_reports_a_timezone_that_cannot_resolve():
+    """Exatamente o sintoma de `tzdata` ausente no Windows: um fuso cadastrado
+    e perfeitamente valido deixa de resolver, e nenhum agendamento dispara."""
+
+    class _Sched:
+        timezone = "Zona/Inexistente"
+
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing(),
+        list_schedules=lambda: [_Sched()],
+        frontend_built=lambda: True,
+    )
+    assert len(problems) == 1
+    assert "Zona/Inexistente" in problems[0]
+    assert "tzdata" in problems[0]
+    assert "agendamentos nao disparam" in problems[0]
+
+
+def test_runtime_health_reports_the_missing_frontend_build():
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing(),
+        list_schedules=lambda: [],
+        frontend_built=lambda: False,
+    )
+    assert len(problems) == 1
+    assert "frontend/dist" in problems[0]
+    assert "npm run build" in problems[0]
+
+
+def test_runtime_health_survives_a_broken_schedule_store():
+    """A checagem de saude nunca pode ser o motivo de o painel nao subir."""
+
+    def _explodes():
+        raise OSError("schedules.json ilegivel")
+
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing(),
+        list_schedules=_explodes,
+        frontend_built=lambda: True,
+    )
+    assert problems == []  # fuso neutro resolve; o store quebrado nao derruba nada
+
+
+def test_runtime_health_reports_every_missing_package_at_once():
+    problems = webui.check_runtime_health(
+        find_spec=_spec_missing("soundcard", "soundfile", "numpy", "faster_whisper"),
+        list_schedules=lambda: [],
+        frontend_built=lambda: True,
+    )
+    assert len(problems) == 4
+    assert {"soundcard", "soundfile", "numpy", "faster_whisper"} == {
+        p.split("“")[1].split("”")[0] for p in problems
+    }

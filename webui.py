@@ -18,6 +18,7 @@ ambiente virtual antes de chamar isto aqui).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import mimetypes
@@ -56,6 +57,7 @@ from meeting_transcriber.audio_capture import SAMPLE_RATE  # noqa: E402
 from meeting_transcriber.scheduling.clock import SystemClock  # noqa: E402
 from meeting_transcriber.scheduling.engine import SchedulerEngine  # noqa: E402
 from meeting_transcriber.scheduling.service import ScheduleService, ValidationError as ScheduleValidationError  # noqa: E402
+from meeting_transcriber.scheduling.recurrence import InvalidTimeZone, resolve_zone  # noqa: E402
 from meeting_transcriber.scheduling.store import ScheduleStore  # noqa: E402
 from meeting_transcriber.export import CONTENT_TYPES as EXPORT_CONTENT_TYPES  # noqa: E402
 from meeting_transcriber.export import EXTENSIONS as EXPORT_EXTENSIONS  # noqa: E402
@@ -1567,6 +1569,77 @@ class SinglePortServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+# Pacotes sem os quais o painel SOBE mas nao consegue cumprir o que promete.
+# Nao e a lista inteira de requirements.txt -- so o que, faltando, transforma
+# "gravar" ou "transcrever" numa falha tardia.
+RUNTIME_REQUIREMENTS = (
+    ("soundcard", "capturar o audio do computador e do microfone"),
+    ("soundfile", "salvar os blocos de audio em .wav"),
+    ("numpy", "processar o audio capturado"),
+    ("faster_whisper", "transcrever"),
+)
+
+
+def check_runtime_health(
+    *,
+    find_spec=importlib.util.find_spec,
+    list_schedules=None,
+    frontend_built=None,
+) -> "list[str]":
+    """Problemas de ambiente que so apareceriam MUITO depois, no pior momento.
+
+    O painel sobe normalmente num Python sem as dependencias do projeto: a
+    tela abre, o historico funciona, e a falha so acontece quando uma aula
+    AGENDADA tenta gravar. Aconteceu de verdade em 21/09/2026 -- um painel
+    iniciado com o Python global em vez do `.venv` passou seis minutos
+    estourando no preflight a cada 20 s, sem nada na tela, e a aula nunca
+    gravou (ver docs/SCHEDULING.md). Checar aqui troca esse silencio por uma
+    mensagem ANTES da aula.
+
+    Tudo injetavel: a suite testa a funcao sem desinstalar nada de verdade.
+    """
+    problems = []
+
+    for module, purpose in RUNTIME_REQUIREMENTS:
+        try:
+            available = find_spec(module) is not None
+        except (ImportError, ValueError):
+            available = False
+        if not available:
+            problems.append(
+                f"O pacote “{module}” nao esta instalado neste Python — sem ele o painel "
+                f"nao consegue {purpose}. Rode: pip install -r requirements.txt"
+            )
+
+    # Fusos: um nome valido no cadastro deixa de resolver se o BANCO de fusos
+    # sumir do ambiente (no Windows `zoneinfo` nao tem base propria e depende
+    # do pacote tzdata). Checa os fusos realmente cadastrados; sem nenhum
+    # agendamento, sonda um nome IANA neutro so pra saber se existe base.
+    try:
+        scheduled = list_schedules() if list_schedules is not None else schedule_store.list_all()
+        zone_names = sorted({s.timezone for s in scheduled}) or ["Etc/UTC"]
+    except Exception:  # noqa: BLE001 -- checagem de saude nunca derruba o boot
+        zone_names = ["Etc/UTC"]
+    for name in zone_names:
+        try:
+            resolve_zone(name)
+        except InvalidTimeZone:
+            problems.append(
+                f"O fuso “{name}” nao resolve neste Python — no Windows o banco de fusos vem "
+                "do pacote tzdata. Enquanto isso nao for corrigido, agendamentos nao disparam. "
+                "Rode: pip install -r requirements.txt"
+            )
+
+    built = frontend_built() if frontend_built is not None else _frontend_build_available()
+    if not built:
+        problems.append(
+            "O build do React (frontend/dist/) nao existe — o painel legado sera servido no lugar. "
+            "Para gerar: cd frontend && npm install && npm run build"
+        )
+
+    return problems
+
+
 def main() -> None:
     global MEETINGS_DIR
     try:
@@ -1636,6 +1709,12 @@ def main() -> None:
     # C.1, secao 20: recalcula next_run_at/identifica "missed" na hora,
     # sem esperar o primeiro intervalo).
     schedule_engine.start()
+
+    # Depois de garantir a porta (nao polui a saida de um segundo clique no
+    # iniciar.bat) e antes de anunciar o painel como pronto: quem le o
+    # terminal precisa ver isto sem rolar a tela.
+    for problem in check_runtime_health():
+        print(f"  [ATENCAO] {problem}")
 
     print(f"Painel disponivel em {url} (Ctrl+C aqui encerra o servidor, nao a gravacao).")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
