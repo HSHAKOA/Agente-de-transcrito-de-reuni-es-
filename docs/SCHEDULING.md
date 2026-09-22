@@ -43,6 +43,17 @@ cada dia candidato, em vez de somar `timedelta(days=1)` a um datetime já
 recorrência diária/semanal seja resolvida corretamente pelo próprio
 `zoneinfo`, não por aritmética manual.
 
+O nome do fuso é validado **no cadastro** (`scheduling/validation.py`
+chama `resolve_zone`), então um agendamento salvo tem, por construção, um
+fuso que resolvia naquele momento. Se ele parar de resolver depois — o
+caso real é o `tzdata` sumir do interpretador que roda o painel —
+`next_occurrence` passa a levantar `InvalidTimeZone` em **todo** tick.
+`tick_once` trata esse caso explicitamente (`_mark_timezone_unusable`):
+registra a causa verdadeira uma única vez, zera `next_run_at` (para a tela
+não prometer um horário que não vai acontecer) e mantém `is_open()`
+verdadeiro, de modo que o agendamento volta sozinho quando a dependência
+for reinstalada. Ver "Incidente 21/09/2026" abaixo.
+
 ## Recorrência
 
 Tipos: `once`, `daily`, `weekdays` (seg-sex), `weekly` (um dia fixo),
@@ -139,9 +150,59 @@ invisível rodando o tempo todo. Fica como pendência explícita (ver
   interno (Nível 1) pode garantir a captura — isso é uma limitação de
   arquitetura, não um bug.
 
+## Incidente 21/09/2026 — "missed" mentindo sobre a causa
+
+Uma aula agendada para 21:00 não gravou. A tela mostrou *"Esta gravação
+estava programada para começar às 21:00. O aplicativo não estava
+disponível naquele horário."* — **falso**: o painel estava aberto e
+tentando iniciar a cada 20 s.
+
+O que realmente aconteceu, na ordem:
+
+1. O painel foi reiniciado com o Python **global** em vez do `.venv`. Ele
+   subiu normalmente: a tela abriu, o histórico funcionou, a detecção de
+   sessões interrompidas rodou. Nada indicava problema.
+2. Sem `soundcard`, `check_device_health` passou a levantar `AudioError`.
+   Como `_check_readiness` chamava a sonda diretamente, a exceção
+   atravessava o preflight inteiro.
+3. `tick_once` capturava com seu `except Exception` genérico, registrava no
+   log do terminal e seguia. **Nada era salvo no agendamento** — em
+   particular, `run.error_message` continuava `None`.
+4. Passados os 60 s de tolerância, o motor marcou `missed`. A escolha entre
+   `MISSED` e `FAILED` depende justamente de `run.error_message` estar
+   preenchido; como a exceção impediu isso, o caso caiu no ramo errado e
+   herdou a mensagem de "app fechado".
+5. `missed` é terminal, então todo tick seguinte voltava a reclamar a
+   próxima ocorrência e, sem `tzdata`, estourava `InvalidTimeZone` — para
+   sempre, em silêncio.
+
+Três correções, todas com teste de regressão que falha no código antigo:
+
+- **`_probe_device`**: toda sonda vira veredito, nunca exceção. Backend
+  ausente, driver quebrado ou `OSError` na checagem de pasta agora viram
+  problema de preflight, e a ocorrência termina em `FAILED` com a causa
+  real.
+- **`_mark_timezone_unusable`**: fuso que não resolve vira falha explícita
+  uma vez só, em vez de exceção por tick (ver "Timezone").
+- **`check_runtime_health()` no `webui.py`**: o painel agora imprime o que
+  está faltando (pacote, fuso, build do React) **antes** de se anunciar
+  como pronto. É o que teria transformado esse incidente numa linha no
+  terminal em vez de uma aula perdida.
+
+Lição que vale além do bug: `except Exception` num laço de controle não é
+robustez. Ele manteve o motor vivo e, ao mesmo tempo, apagou a única
+informação que permitiria explicar a falha — e o usuário recebeu uma
+explicação confiante e errada.
+
 ## Limitações conhecidas
 
 - Sem Nível 2 (ver acima): o app precisa estar aberto no horário agendado.
+- Uma ocorrência marcada `missed`/`failed` **não** é reavaliada pelos ramos
+  de `_process_schedule_step` que citam esses estados: como os dois são
+  terminais, o topo da função reclama a próxima ocorrência antes de chegar
+  lá. O caminho real de retomada é `start_now`/`ignore_missed` (ação do
+  usuário), exatamente como projetado — mas os ramos citados são código
+  morto e merecem uma limpeza quando alguém mexer nesse arquivo.
 - Checagem de conflito tem horizonte de 30 dias; recorrências que só se
   cruzam além disso não são avisadas no cadastro (mitigado em tempo real
   pelo slot único de gravação).

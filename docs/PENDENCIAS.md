@@ -21,14 +21,15 @@ reproduzível, core estável, testes, docs e GitHub organizados.
 | Core estável (áudio, transcrição, recovery, agendador, SQLite) | pronto, com a ressalva da validação real abaixo |
 | React funcional, 8 telas + recuperação, cada uma testada | pronto |
 | Histórico dedicado (busca, status, período, paginação) | pronto |
-| Testes reproduzíveis (backend 650, frontend 79) | pronto localmente; **CI ainda não confirmado verde** |
-| CI verde (backend, build, lint, testes do frontend) | corrigido e verificado localmente; **precisa do push** |
+| Testes reproduzíveis (backend, frontend) | pronto |
+| CI verde (backend, build, lint, testes do frontend) | **verde** desde o run 35668708065 (era 9/9 vermelho) |
 | Sem dados pessoais no repositório | pronto (histórico do Git conferido; `.gitignore` por assinatura) |
-| Docs alinhados com o código | pronto para o que foi tocado (ARCHITECTURE, API, RECOVERY, SECURITY, DATABASE, TESTING, FLOWCHARTS); os demais `docs/<FASE>.md` não foram reauditados |
+| Docs alinhados com o código | pronto para o que foi tocado (ARCHITECTURE, API, RECOVERY, SECURITY, DATABASE, TESTING, FLOWCHARTS, SCHEDULING, LICENSES); os demais `docs/<FASE>.md` não foram reauditados |
 | Templates de issue/PR, CONTRIBUTING, SECURITY | pronto |
-| **`LICENSE`** | **decisão do proprietário — pendente** |
-| **Relato privado de vulnerabilidade** | **habilitar no GitHub — pendente** |
+| `LICENSE` | **pronto** — Apache-2.0, com auditoria em `docs/LICENSES.md` |
+| Relato privado de vulnerabilidade | **habilitado** no GitHub |
 | Instalação reproduzível num clone limpo | parcial: `frontend/dist/` não é versionado (ver P2) |
+| `CODE_OF_CONDUCT.md` | **pendente — depende do proprietário** (ver abaixo) |
 
 ## P0 — bloqueiam uma demonstração completa
 
@@ -37,18 +38,21 @@ parar, recuperar, agendar, buscar, exportar) funciona e está testado.
 
 ## P1 — valem antes de chamar de V1.0
 
-1. **Confirmar o CI verde depois do push.** O CI nunca esteve verde (9/9 runs
-   falharam). Foram corrigidas as 4 causas e a suíte roda igual sob `TZ=UTC0`
-   e com sondas de áudio reais proibidas — mas isso só é prova local. O job de
-   frontend (Ubuntu, Node 22) passou a rodar `npm test` e não foi exercitado
-   fora do Windows.
-2. **Validar com hardware real o que mudou no encerramento e no
+1. **Validar com hardware real o que mudou no encerramento e no
    reprocessamento.** Espera ciente de progresso, marca imediata de
    `interrupted` e "Reprocessar" pelo React só rodaram com dublês e HTTP
    simulado. Uma gravação longa real (≥ 15 min) parada pelo painel deve
    terminar em `completed`.
-3. **Reunião real de 21/09 aguardando Reprocessar** (9/11 blocos; áudio
+2. **Reunião real de 21/09 aguardando Reprocessar** (9/11 blocos; áudio
    íntegro) — ver `docs/HANDOFF_PROXIMA_SESSAO.md`.
+3. **Transcrição durante a gravação satura a CPU.** Medido em 21/09/2026
+   num i5-11400H (6 núcleos/12 threads): com `small` em CPU e blocos de
+   300 s, a transcrição durável mantém a máquina em **99-100%** durante toda
+   a gravação, e o `soundcard` emite `data discontinuity in recording`. A
+   gravação não é perdida (o áudio já está em disco antes da transcrição),
+   mas o backlog cresce e o encerramento precisa drená-lo. Não há hoje
+   nenhum limite de paralelismo nem opção de "transcrever só no final".
+   Investigar antes de prometer transcrição ao vivo em máquina modesta.
 4. **Speaker por segmento.** Hoje o rótulo é por reunião; na captura
    simultânea tudo vira "Reunião". O áudio por canal já é guardado
    (`audio/microphone/`, `audio/system/`), então dá para atribuir cada
@@ -72,6 +76,16 @@ para o banco real; pastas de reunião fora do `.gitignore`; docs defasados e
 o banner "Prévia (Fase F)" em toda tela. Detalhe e evidências em
 `docs/HANDOFF_PROXIMA_SESSAO.md`.
 
+Na sessão seguinte (21/09, noite), disparado por um agendamento real que não
+gravou: preflight que **levantava exceção** e fazia a ocorrência ser marcada
+`missed` com a causa errada; fuso que deixa de resolver derrubando todo tick
+em silêncio; painel que subia sem as dependências e só falhava na hora da
+aula; `iniciar.bat` sem checagem de Python/venv/build. Reconstituição
+completa em `docs/SCHEDULING.md` ("Incidente 21/09/2026"). Também nesta
+sessão: `LICENSE` (Apache-2.0), relato privado de vulnerabilidade habilitado,
+as 3 reuniões-fantasma removidas do banco real e as Actions atualizadas
+(fim dos avisos de Node 20).
+
 ## P2 — features avançadas e polimento
 
 7. **Meeting Intelligence (Fase G)** — projeto revisável em
@@ -87,16 +101,19 @@ o banner "Prévia (Fase F)" em toda tela. Detalhe e evidências em
     `aria-*`/`role` sistemáticos; Dashboard, Nova Reunião, Gravação,
     Agendamentos e Configurações não foram auditados (teclado, foco,
     contraste, leitores de tela).
-12. **Reuniões-fantasma no `data/meetings.db` real.** Três linhas
-    (`20260101-000000-ffffff`, `-222222`, `-333333`) apontam para pastas
-    temporárias do pytest de 15/09. O vazamento foi corrigido na fixture, mas
-    as linhas ficaram e aparecem no Histórico como "Interrompida"/"Gravando".
-    Limpeza segura (soft delete, não toca em arquivo):
-    `POST /api/meetings/<id>/delete` para cada um. Melhoria de produto: a
-    importação poderia marcar como removidas as linhas cuja pasta não existe
-    mais.
-13. **Avisos de depreciação do Node 20 nas Actions** (`actions/checkout@v4`,
-    `setup-python@v5`, `setup-node@v4`) — só avisos; atualizar as versões.
+12. **Código morto no `_process_schedule_step`.** Os ramos que tratam
+    `MISSED`/`FAILED` são inalcançáveis: os dois status são terminais, então
+    o topo da função reclama a próxima ocorrência antes de chegar neles. O
+    caminho real é `start_now`/`ignore_missed`. Limpar quando alguém mexer
+    no arquivo — não vale um commit isolado, mas confunde quem lê.
+13. **Importação não reconcilia status.** Uma reunião importada enquanto
+    estava `processing` continua `processing` no SQLite mesmo depois de a
+    sessão em disco virar `interrupted`/`completed` (três das quatro
+    reuniões reais estão assim hoje). O Histórico mostra um status
+    desatualizado até a reunião ser reimportada.
+    **Não** resolver marcando como removida toda linha cuja pasta sumiu: a
+    pasta pode estar num disco externo desconectado, e isso apagaria do
+    histórico reuniões perfeitamente válidas.
 
 ## P3 — polimento
 
@@ -111,16 +128,25 @@ o banner "Prévia (Fase F)" em toda tela. Detalhe e evidências em
     próximo (o último fica com duração zero; SRT/VTT já aplicam o mínimo de
     0,5 s — limitação documentada em `docs/DATABASE.md`).
 
-## Licença e decisões do proprietário
+## Decisões do proprietário
 
-Sem `LICENSE`: a missão proíbe escolher uma licença jurídica em nome de quem
-não decidiu isso. Sem ela, o código é "todos os direitos reservados" — para
-um projeto que será portfólio/open source, é a primeira decisão da V1.0
-(MIT e Apache-2.0 são as escolhas usuais; a diferença relevante é a
-concessão explícita de patentes da Apache). Também dependem do proprietário:
-habilitar *Private vulnerability reporting* no GitHub e, se quiser, um
-`CODE_OF_CONDUCT.md` (exige um contato de moderação, que não deve ser
-inventado).
+**Resolvidas:** `LICENSE` (Apache-2.0, com a auditoria de dependências em
+`docs/LICENSES.md`) e *Private vulnerability reporting*, agora habilitado no
+GitHub — `docs/SECURITY.md` já descreve o canal.
+
+**Ainda pendente — `CODE_OF_CONDUCT.md`.** O Contributor Covenant exige um
+canal **privado** para denúncias de conduta, e hoje não existe nenhum que
+possa ser publicado sem uma decisão sua:
+
+- o GitHub não tem mensagem direta entre usuários, então "falar com o
+  mantenedor no GitHub" não é um canal real;
+- o *private vulnerability reporting* é para segurança, não para conduta;
+- publicar um e-mail pessoal num repositório público é uma escolha de
+  privacidade que não cabe a mais ninguém fazer.
+
+O caminho usual é criar um endereço dedicado (um alias qualquer serve) e
+usá-lo só nesse arquivo. Enquanto isso não for decidido, é mais honesto não
+ter o arquivo do que ter um com um contato que não funciona.
 
 ## Testado com hardware real vs. só com dublês
 

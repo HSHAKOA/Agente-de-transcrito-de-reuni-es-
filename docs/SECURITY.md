@@ -154,14 +154,13 @@ issue, **nao cole trechos de transcricoes nem anexe audio**.
 ## Como reportar uma vulnerabilidade
 
 Nao abra uma issue publica com detalhes de exploracao. Use o **"Report a
-vulnerability"** da aba *Security* do repositorio no GitHub (relato privado);
-se ele nao estiver disponivel, abra uma issue **sem detalhes tecnicos**
-pedindo um canal privado. Nao ha SLA formal: e um projeto academico/pessoal
+vulnerability"** da aba *Security* do repositorio no GitHub — o *Private
+vulnerability reporting* esta **habilitado**, entao esse botao existe e o
+relato chega em privado. Nao ha SLA formal: e um projeto academico/pessoal
 mantido por uma pessoa.
 
-> Pendencia do proprietario: habilitar *Private vulnerability reporting* em
-> *Settings > Code security* do repositorio — depende de uma configuracao no
-> GitHub que nao da pra fazer por codigo.
+Nenhum endereco de e-mail e publicado de proposito: o canal do GitHub evita
+expor um contato pessoal e ja entrega o relato em privado.
 
 ## O que fica pra depois (fora do escopo desta fase)
 
