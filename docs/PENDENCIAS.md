@@ -97,16 +97,42 @@ as 3 reuniões-fantasma removidas do banco real e as Actions atualizadas
    versionado: um clone limpo mostra o painel legado até rodar
    `npm run build` (documentado em `docs/APRESENTACAO_PROFESSOR.md`).
 10. **DOCX/PDF** — só Markdown/TXT/JSON/SRT/VTT existem.
-11. **Acessibilidade** — só o Histórico e o banner de recuperação têm
-    `aria-*`/`role` sistemáticos; Dashboard, Nova Reunião, Gravação,
-    Agendamentos e Configurações não foram auditados (teclado, foco,
-    contraste, leitores de tela).
-12. **Código morto no `_process_schedule_step`.** Os ramos que tratam
+11. **Acessibilidade** — auditada em 21/09/2026 (só leitura de código; nada
+    testado com leitor de tela real ainda). Em ordem de impacto:
+
+    1. **Nenhum campo de formulário tem nome acessível.** Os `<label>` não
+       envolvem o input e não usam `htmlFor`/`id` — são irmãos soltos
+       (`<label>Título</label><input/>`). Um leitor de tela anuncia "campo
+       de edição, vazio", e clicar no rótulo não foca o campo. Atinge ~20
+       controles: Nova Reunião (4), Agendamento (7), Histórico (4),
+       `AudioSourcePicker` (4). Em Configurações o campo de caminho manual
+       não tem rótulo nenhum, só `placeholder` — que **não** é rótulo.
+       Correção barata: `id` + `htmlFor`.
+    2. **9 dos 14 arquivos de interface não têm nenhum `aria-*`/`role`.**
+       Só `History` (8 ocorrências), `RecoveryBanner` (3), `Dashboard` (1)
+       e `Settings` (1) têm algo.
+    3. **Nenhuma região viva.** A transcrição ao vivo cresce sem
+       `aria-live="polite"`; o aviso "Finalizando…" não tem `role="status"`;
+       erros não têm `role="alert"` (exceto em Configurações).
+    4. **Sem hierarquia de títulos.** São 8 `<h1>` (um por tela, correto) e
+       **zero** `<h2>`-`<h6>`: os rótulos de seção são `<p>` estilizado,
+       então não dá para navegar por títulos.
+    5. Não auditados ainda com ferramenta: contraste medido, ordem de
+       tabulação, foco visível em todos os controles, alvo de toque.
+
+    Regras-alvo em `DESIGN.md`, seção 9.
+12. **`LevelBar` anima `width` 10x por segundo.** `transition-[width]
+    duration-150` num medidor que recebe amostra a cada 100 ms: cada quadro
+    força recálculo de layout, numa máquina que já está a 100% de CPU
+    transcrevendo. Pior, a transição faz a barra **atrasar** em relação ao
+    áudio — um medidor atrasado é um medidor mentiroso. Remover a transição
+    (ver `MOTION.md`, seção 5).
+13. **Código morto no `_process_schedule_step`.** Os ramos que tratam
     `MISSED`/`FAILED` são inalcançáveis: os dois status são terminais, então
     o topo da função reclama a próxima ocorrência antes de chegar neles. O
     caminho real é `start_now`/`ignore_missed`. Limpar quando alguém mexer
     no arquivo — não vale um commit isolado, mas confunde quem lê.
-13. **Importação não reconcilia status.** Uma reunião importada enquanto
+14. **Importação não reconcilia status.** Uma reunião importada enquanto
     estava `processing` continua `processing` no SQLite mesmo depois de a
     sessão em disco virar `interrupted`/`completed` (três das quatro
     reuniões reais estão assim hoje). O Histórico mostra um status
