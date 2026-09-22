@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/* Movimento reduzido -- ver MOTION.md, secao 4.
+ *
+ * Nao e preferencia estetica: para parte das pessoas, movimento na tela
+ * causa nausea e tontura de verdade, e o sistema operacional ja carrega
+ * essa escolha. As utilidades de animacao do Tailwind (`animate-pulse` no
+ * indicador de gravacao, por exemplo) NAO respeitam isso sozinhas.
+ *
+ * O ponto de gravacao continua visivel e vermelho, e o texto "GRAVANDO"
+ * ao lado continua dizendo o estado -- a informacao nunca dependeu da
+ * animacao, so era reforcada por ela. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
