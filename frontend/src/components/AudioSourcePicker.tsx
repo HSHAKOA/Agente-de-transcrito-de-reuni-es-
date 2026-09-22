@@ -39,6 +39,11 @@ export function AudioSourcePicker({
         </label>
         {captureSystem && (
           <select
+            // O checkbox acima tem nome (esta dentro do <label>), mas este
+            // select nao -- um leitor de tela anunciaria so "caixa de
+            // combinacao". Nome explicito porque o rotulo visivel pertence
+            // ao checkbox, nao a ele.
+            aria-label="Dispositivo de áudio do computador"
             value={systemDeviceId}
             onChange={(e) => setSystemDeviceId(e.target.value)}
             className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs outline-none"
@@ -66,6 +71,7 @@ export function AudioSourcePicker({
         </label>
         {captureMicrophone && (
           <select
+            aria-label="Dispositivo de microfone"
             value={microphoneDeviceId}
             onChange={(e) => setMicrophoneDeviceId(e.target.value)}
             className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-xs outline-none"

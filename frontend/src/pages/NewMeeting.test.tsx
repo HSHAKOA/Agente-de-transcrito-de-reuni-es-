@@ -110,3 +110,53 @@ describe("NewMeeting", () => {
     await waitFor(() => expect(screen.getAllByText("Áudio do computador")).toHaveLength(2));
   });
 });
+
+describe("NewMeeting — nomes acessíveis", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getSettings.mockResolvedValue({
+      meetings_root: "C:\\Reunioes",
+      folder_dialog_available: true,
+      free_bytes: 5_000_000_000,
+    });
+    api.getAudioDevices.mockResolvedValue({
+      inputs: [{ id: "mic-1", name: "Microfone USB", is_default: true }],
+      outputs: [{ id: "spk-1", name: "Alto-falantes", is_default: true, loopback_supported: true }],
+    });
+    api.getAudioConfig.mockResolvedValue({
+      capture_system: true,
+      capture_microphone: true,
+      system_device_id: null,
+      microphone_device_id: null,
+    });
+  });
+
+  // Os rótulos existiam, mas como IRMÃOS do campo, sem htmlFor/id: um leitor
+  // de tela anunciava "campo de edição, vazio". getByLabelText só encontra o
+  // campo quando a associação existe de verdade, então estes testes falham
+  // no código anterior.
+  it("associa cada rótulo ao seu campo", async () => {
+    renderNewMeeting();
+
+    expect(await screen.findByLabelText("Título")).toBeInTheDocument();
+    expect(screen.getByLabelText("Modelo")).toBeInTheDocument();
+    expect(screen.getByLabelText("Idioma")).toBeInTheDocument();
+  });
+
+  it("dá nome aos seletores de dispositivo, que ficam fora do rótulo", async () => {
+    renderNewMeeting();
+
+    expect(await screen.findByLabelText("Dispositivo de áudio do computador")).toBeInTheDocument();
+    expect(screen.getByLabelText("Dispositivo de microfone")).toBeInTheDocument();
+  });
+
+  it("expõe o dispositivo de inferência como grupo, com o ativo marcado", async () => {
+    renderNewMeeting();
+
+    const group = await screen.findByRole("group", { name: "Dispositivo de inferência" });
+    expect(group).toBeInTheDocument();
+    // a cor sozinha nao comunica selecao pra leitor de tela
+    expect(screen.getByRole("button", { name: "CPU", pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "CUDA", pressed: false })).toBeInTheDocument();
+  });
+});

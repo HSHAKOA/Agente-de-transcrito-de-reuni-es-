@@ -177,8 +177,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
       <h1 className="text-xl font-semibold tracking-tight">{existing ? "Editar agendamento" : "Agendar gravação"}</h1>
 
       <div className="mt-5">
-        <label className="mb-1.5 block text-xs font-medium text-neutral-500">Título</label>
+        <label htmlFor="agendamento-titulo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+          Título
+        </label>
         <input
+          id="agendamento-titulo"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Aula de Cálculo"
@@ -188,8 +191,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
 
       <div className="mt-4 grid grid-cols-3 gap-3">
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Data</label>
+          <label htmlFor="agendamento-data" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Data
+          </label>
           <input
+            id="agendamento-data"
             type="date"
             value={scheduledDate}
             onChange={(e) => setScheduledDate(e.target.value)}
@@ -197,8 +203,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Começa</label>
+          <label htmlFor="agendamento-comeca" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Começa
+          </label>
           <input
+            id="agendamento-comeca"
             type="time"
             value={startTime}
             onChange={(e) => setStartTime(e.target.value)}
@@ -206,8 +215,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Termina</label>
+          <label htmlFor="agendamento-termina" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Termina
+          </label>
           <input
+            id="agendamento-termina"
             type="time"
             value={endTime}
             onChange={(e) => setEndTime(e.target.value)}
@@ -220,8 +232,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
       </p>
 
       <div className="mt-4">
-        <label className="mb-1.5 block text-xs font-medium text-neutral-500">Repetição</label>
+        <label htmlFor="agendamento-repeticao" className="mb-1.5 block text-xs font-medium text-neutral-500">
+          Repetição
+        </label>
         <select
+          id="agendamento-repeticao"
           value={recurrenceType}
           onChange={(e) => {
             const next = e.target.value as RecurrenceType;
@@ -281,8 +296,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
 
       <div className="mt-4 grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Modelo</label>
+          <label htmlFor="agendamento-modelo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Modelo
+          </label>
           <select
+            id="agendamento-modelo"
             value={model}
             onChange={(e) => setModel(e.target.value as WhisperModel)}
             className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
@@ -295,8 +313,11 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
           </select>
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Idioma</label>
+          <label htmlFor="agendamento-idioma" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Idioma
+          </label>
           <input
+            id="agendamento-idioma"
             value={language}
             onChange={(e) => setLanguage(e.target.value)}
             className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
@@ -305,13 +326,18 @@ export function ScheduleForm({ existing, onBack, onSaved }: ScheduleFormProps) {
       </div>
 
       <div className="mt-2">
-        <label className="mb-1.5 block text-xs font-medium text-neutral-500">Dispositivo de inferência</label>
-        <div className="flex gap-2">
+        {/* grupo de BOTOES, nao controle de formulario -- <label> aqui nao
+            rotulava nada (ver o mesmo caso em NewMeeting.tsx). */}
+        <span id="agendamento-dispositivo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+          Dispositivo de inferência
+        </span>
+        <div className="flex gap-2" role="group" aria-labelledby="agendamento-dispositivo">
           {(["cpu", "cuda"] as Device[]).map((d) => (
             <button
               key={d}
               type="button"
               onClick={() => setDevice(d)}
+              aria-pressed={device === d}
               className={`rounded-md border px-3 py-1 text-xs transition-colors ${
                 device === d
                   ? "border-neutral-500 bg-neutral-800 text-neutral-100"

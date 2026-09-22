@@ -42,12 +42,15 @@ function CaptureSections() {
       </div>
 
       <div className="mt-6">
-        <p className="mb-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">Transcrição ao vivo</p>
+        <h2 className="mb-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">Transcrição ao vivo</h2>
         <Card>
           {segments.length === 0 ? (
             <p className="text-sm text-neutral-500">Aguardando o primeiro trecho transcrito…</p>
           ) : (
-            <div className="max-h-80 space-y-3 overflow-y-auto">
+            // `polite`: anuncia trecho novo sem interromper o que o leitor
+            // de tela estiver lendo. NUNCA `assertive` -- chega texto novo a
+            // cada poucos segundos durante uma aula inteira.
+            <div className="max-h-80 space-y-3 overflow-y-auto" aria-live="polite" aria-atomic="false">
               {segments.map((seg, i) => {
                 const minutes = Math.floor(seg.start_seconds / 60);
                 const secs = Math.floor(seg.start_seconds % 60);
@@ -70,7 +73,7 @@ function CaptureSections() {
 
       {backlog && (
         <div className="mt-4">
-          <p className="mb-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">Processamento</p>
+          <h2 className="mb-2 text-xs font-medium tracking-wide text-neutral-500 uppercase">Processamento</h2>
           <Card>
             <dl className="grid grid-cols-3 gap-2 text-center text-sm">
               <div>
@@ -173,14 +176,21 @@ export function Recording({ status }: RecordingProps) {
       )}
 
       {stopping && (
-        <div className="mt-4 rounded-lg border border-amber-800/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+        <div
+          role="status"
+          className="mt-4 rounded-lg border border-amber-800/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-200"
+        >
           {resuming
             ? "Finalizando reprocessamento... O bloco em andamento termina de ser transcrito."
             : "Finalizando reunião... Salvando o último bloco e concluindo a transcrição."}
         </div>
       )}
 
-      {stopError && <p className="mt-4 text-sm text-red-400">{stopError}</p>}
+      {stopError && (
+        <p role="alert" className="mt-4 text-sm text-red-400">
+          {stopError}
+        </p>
+      )}
 
       <button
         onClick={handleStop}

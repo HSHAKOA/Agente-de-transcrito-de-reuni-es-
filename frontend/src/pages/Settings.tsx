@@ -119,6 +119,10 @@ export function Settings({ onBack }: SettingsProps) {
         {settings?.folder_dialog_available === false && (
           <div className="mt-2 flex gap-2">
             <input
+              // Unico campo da tela e nao tinha rotulo nenhum -- so
+              // `placeholder`, que desaparece ao digitar e nao e nome
+              // acessivel.
+              aria-label="Caminho da pasta de reuniões"
               value={manualPath}
               onChange={(e) => setManualPath(e.target.value)}
               placeholder="Caminho da pasta"

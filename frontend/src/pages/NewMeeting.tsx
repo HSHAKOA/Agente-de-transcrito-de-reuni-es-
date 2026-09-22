@@ -152,8 +152,11 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
       <h1 className="text-xl font-semibold tracking-tight">Nova reunião</h1>
 
       <div className="mt-5">
-        <label className="mb-1.5 block text-xs font-medium text-neutral-500">Título</label>
+        <label htmlFor="nova-reuniao-titulo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+          Título
+        </label>
         <input
+          id="nova-reuniao-titulo"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Reunião de hoje"
@@ -181,6 +184,8 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
         {settings?.folder_dialog_available === false && (
           <div className="mt-2 flex gap-2">
             <input
+              // "Salvar em" rotula a pasta EXIBIDA acima, nao este campo.
+              aria-label="Caminho da pasta"
               value={manualPath}
               onChange={(e) => setManualPath(e.target.value)}
               placeholder="Caminho da pasta"
@@ -200,8 +205,11 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
 
       <div className="mt-5 grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Modelo</label>
+          <label htmlFor="nova-reuniao-modelo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Modelo
+          </label>
           <select
+            id="nova-reuniao-modelo"
             value={model}
             onChange={(e) => setModel(e.target.value as WhisperModel)}
             className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
@@ -214,8 +222,11 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
           </select>
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-neutral-500">Idioma</label>
+          <label htmlFor="nova-reuniao-idioma" className="mb-1.5 block text-xs font-medium text-neutral-500">
+            Idioma
+          </label>
           <input
+            id="nova-reuniao-idioma"
             value={language}
             onChange={(e) => setLanguage(e.target.value)}
             placeholder="pt, en, auto…"
@@ -225,12 +236,19 @@ export function NewMeeting({ onBack, onStarted }: NewMeetingProps) {
       </div>
 
       <div className="mt-2">
-        <label className="mb-1.5 block text-xs font-medium text-neutral-500">Dispositivo de inferência</label>
-        <div className="flex gap-2">
+        {/* <label> aqui rotulava um grupo de BOTOES, e <label> so rotula
+            controle de formulario -- na pratica nao rotulava nada. Virou
+            grupo nomeado, com `aria-pressed` dizendo qual esta ativo (a cor
+            sozinha nao comunica isso pra leitor de tela). */}
+        <span id="nova-reuniao-dispositivo" className="mb-1.5 block text-xs font-medium text-neutral-500">
+          Dispositivo de inferência
+        </span>
+        <div className="flex gap-2" role="group" aria-labelledby="nova-reuniao-dispositivo">
           {(["cpu", "cuda"] as Device[]).map((d) => (
             <button
               key={d}
               onClick={() => setDevice(d)}
+              aria-pressed={device === d}
               className={`rounded-md border px-3 py-1 text-xs transition-colors ${
                 device === d
                   ? "border-neutral-500 bg-neutral-800 text-neutral-100"

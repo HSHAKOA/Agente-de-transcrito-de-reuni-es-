@@ -100,25 +100,42 @@ as 3 reuniões-fantasma removidas do banco real e as Actions atualizadas
 11. **Acessibilidade** — auditada em 21/09/2026 (só leitura de código; nada
     testado com leitor de tela real ainda). Em ordem de impacto:
 
-    1. **Nenhum campo de formulário tem nome acessível.** Os `<label>` não
-       envolvem o input e não usam `htmlFor`/`id` — são irmãos soltos
-       (`<label>Título</label><input/>`). Um leitor de tela anuncia "campo
-       de edição, vazio", e clicar no rótulo não foca o campo. Atinge ~20
-       controles: Nova Reunião (4), Agendamento (7), Histórico (4),
-       `AudioSourcePicker` (4). Em Configurações o campo de caminho manual
-       não tem rótulo nenhum, só `placeholder` — que **não** é rótulo.
-       Correção barata: `id` + `htmlFor`.
-    2. **9 dos 14 arquivos de interface não têm nenhum `aria-*`/`role`.**
-       Só `History` (8 ocorrências), `RecoveryBanner` (3), `Dashboard` (1)
-       e `Settings` (1) têm algo.
-    3. **Nenhuma região viva.** A transcrição ao vivo cresce sem
-       `aria-live="polite"`; o aviso "Finalizando…" não tem `role="status"`;
-       erros não têm `role="alert"` (exceto em Configurações).
-    4. **Sem hierarquia de títulos.** São 8 `<h1>` (um por tela, correto) e
-       **zero** `<h2>`-`<h6>`: os rótulos de seção são `<p>` estilizado,
-       então não dá para navegar por títulos.
-    5. Não auditados ainda com ferramenta: contraste medido, ordem de
-       tabulação, foco visível em todos os controles, alvo de toque.
+    **Corrigido nesta sessão** (3 testes que falham no código anterior):
+
+    - **Campos sem nome acessível.** Em Nova Reunião e Agendamento os
+      `<label>` eram **irmãos** do campo, sem `htmlFor`/`id` — um leitor de
+      tela anunciava "campo de edição, vazio" e clicar no rótulo não focava
+      nada. Pareados (11 campos). Os `<select>` de dispositivo do
+      `AudioSourcePicker` e o campo de caminho de Configurações, que não
+      tinham rótulo visível próprio, ganharam `aria-label`.
+    - **`<label>` sobre grupo de botões.** "Dispositivo de inferência"
+      rotulava dois `<button>`, e `<label>` só rotula controle de
+      formulário — na prática não rotulava nada. Virou `role="group"` com
+      `aria-labelledby`, e os botões ganharam `aria-pressed` (a cor sozinha
+      não comunica seleção).
+    - **Regiões vivas na tela de Gravação.** Transcrição ao vivo com
+      `aria-live="polite"` (nunca `assertive`: chega texto novo a cada
+      poucos segundos por horas), "Finalizando…" com `role="status"`, erro
+      de parada com `role="alert"`.
+    - Os dois rótulos de seção da Gravação viraram `<h2>`.
+
+    **Correção de uma afirmação anterior deste documento:** estava escrito
+    que *nenhum* campo tinha nome acessível. Falso. O **Histórico já estava
+    correto** (busca com `aria-label`, e os três filtros envolvem o controle
+    dentro do `<label>`, que é associação implícita válida), e os
+    *checkboxes* do `AudioSourcePicker` também já estavam. O erro veio de
+    contar `<label>` e `htmlFor` por arquivo sem verificar se o rótulo
+    envolvia o campo.
+
+    **Ainda pendente:**
+
+    1. Dashboard, Detalhe da Reunião e Agendamentos seguem sem nenhum
+       `aria-*`/`role`.
+    2. Fora da Gravação, os rótulos de seção continuam `<p>` estilizado —
+       não há hierarquia de títulos para navegar.
+    3. Não auditados com ferramenta: contraste medido, ordem de tabulação,
+       foco visível em todos os controles, alvo de toque.
+    4. Nada testado com leitor de tela real.
 
     Regras-alvo em `DESIGN.md`, seção 9.
 12. **`LevelBar` anima `width` 10x por segundo.** `transition-[width]
