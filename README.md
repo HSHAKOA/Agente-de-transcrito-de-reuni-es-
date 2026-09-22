@@ -249,7 +249,9 @@ Veja `CONTRIBUTING.md` (instalação, testes, estilo de commit, dados
 pessoais) e `docs/SECURITY.md` (modelo de ameaça e como reportar uma
 vulnerabilidade).
 
-**Este repositório ainda não tem `LICENSE`.** Sem uma licença explícita, o
-código continua com todos os direitos reservados ao autor — ninguém tem
-permissão para reutilizá-lo ou redistribuí-lo. Escolher a licença é uma
-decisão do proprietário, ainda pendente (ver `docs/PENDENCIAS.md`).
+Licenciado sob a **[Apache License 2.0](LICENSE)** — permissiva, com
+concessão explícita de patentes. Uma auditoria das dependências (6 diretas
+no backend, 137 pacotes no `node_modules` do frontend) não encontrou
+nenhuma licença copyleft forte (GPL/AGPL/LGPL/SSPL) nem código de terceiros
+incorporado ao repositório, então não há obrigação que se propague para
+quem usar este código. Detalhe em `docs/LICENSES.md`.
