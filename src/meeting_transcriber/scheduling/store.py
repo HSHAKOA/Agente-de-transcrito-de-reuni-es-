@@ -17,27 +17,16 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .. import atomic
 from .models import Schedule
 
 SCHEDULES_FILE_NAME = "schedules.json"
 
 
-def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay: float = 0.05) -> None:
-    last_exc: Optional[OSError] = None
-    for attempt in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except OSError as exc:
-            last_exc = exc
-            if attempt < attempts - 1:
-                time.sleep(delay)
-    assert last_exc is not None
-    raise last_exc
+_replace_with_retry = atomic.replace_with_retry  # copia unica em `atomic.py`
 
 
 class ScheduleStore:

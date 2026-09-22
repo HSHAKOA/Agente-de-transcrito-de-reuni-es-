@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import List, Optional
+
+from . import atomic
 
 SETTINGS_FILE_NAME = "settings.json"
 
@@ -42,25 +43,7 @@ def load(settings_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay: float = 0.05) -> None:
-    """`os.replace()` no Windows pode falhar transitoriamente logo apos o
-    destino ser criado/escrito (ex.: antivirus/indexador segurando um
-    handle nele por uma fracao de segundo) -- observado na pratica durante
-    esta fase, num teste com varias reunioes/escritas concorrentes.
-    Algumas tentativas com um atraso minimo resolvem isso sem mascarar uma
-    falha real (permissao de verdade, disco cheio): se todas as tentativas
-    falharem, a excecao original ainda propaga."""
-    last_exc: Optional[OSError] = None
-    for attempt in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except OSError as exc:
-            last_exc = exc
-            if attempt < attempts - 1:
-                time.sleep(delay)
-    assert last_exc is not None
-    raise last_exc
+_replace_with_retry = atomic.replace_with_retry  # copia unica em `atomic.py`
 
 
 def save(settings_path: Path, data: dict) -> None:

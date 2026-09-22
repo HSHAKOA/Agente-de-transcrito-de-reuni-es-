@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from . import atomic
+
 STATUS_CREATED = "created"
 STATUS_RECORDING = "recording"
 STATUS_PROCESSING = "processing"
@@ -110,14 +112,14 @@ def _now_iso() -> str:
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
-    """Escreve JSON de forma atomica: grava num arquivo temporario no mesmo
-    diretorio e substitui o arquivo final com `os.replace` (atomico em POSIX
-    e Windows). Assim o state.json nunca fica corrompido/pela metade se o
-    processo morrer no meio de uma escrita.
+    """Escreve JSON de forma atomica (ver `atomic.py`), para o state.json
+    nunca ficar pela metade se o processo morrer no meio de uma escrita.
+
+    O retry importa aqui tambem: o painel le `state.json` para montar o
+    historico e o banner de recuperacao enquanto o gravador o reescreve a
+    cada bloco.
     """
-    tmp_path = path.with_name(path.name + f".tmp-{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+    atomic.write_json(path, data, indent=2)
 
 
 @dataclass

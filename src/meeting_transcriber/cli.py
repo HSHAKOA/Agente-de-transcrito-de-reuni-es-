@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Sequence
 
+from . import atomic
 from .audio.devices import check_device_health
 from .audio.dual_capture import dual_recording_worker
 from .audio.levels import LevelMeter, compute_rms, normalize_level
@@ -196,13 +197,12 @@ def _register_shutdown_signals(handler) -> None:
 
 
 def _write_levels_snapshot(level_meter: LevelMeter, levels_file: Path) -> None:
-    """Escrita atomica (mesmo padrao de session.py/settings.py): grava num
-    arquivo temporario e substitui com `os.replace`. levels.json e lido com
-    muito mais frequencia que state.json (varias vezes por segundo pelo
-    stream do painel), entao nunca pode aparecer pela metade pro leitor."""
-    tmp_path = levels_file.with_name(levels_file.name + f".tmp-{os.getpid()}")
-    tmp_path.write_text(json.dumps(level_meter.snapshot()), encoding="utf-8")
-    os.replace(tmp_path, levels_file)
+    """Escrita atomica (ver `atomic.py`). levels.json e lido com muito mais
+    frequencia que state.json -- varias vezes por segundo pelo stream do
+    painel -- entao nunca pode aparecer pela metade pro leitor, E e o
+    arquivo onde a negacao transitoria do Windows mais aparece: e o painel
+    lendo este mesmo arquivo que faz `os.replace` ser negado."""
+    atomic.write_json(levels_file, level_meter.snapshot())
 
 
 def _levels_writer_loop(
@@ -228,9 +228,7 @@ def _levels_writer_loop(
 def _write_live_transcript_snapshot(live_transcript: LiveTranscript, live_transcript_file: Path) -> None:
     """Mesmo padrao de `_write_levels_snapshot` -- escrita atomica, arquivo
     lido com frequencia (SSE do painel), nunca pode aparecer pela metade."""
-    tmp_path = live_transcript_file.with_name(live_transcript_file.name + f".tmp-{os.getpid()}")
-    tmp_path.write_text(json.dumps(live_transcript.snapshot(), ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp_path, live_transcript_file)
+    atomic.write_json(live_transcript_file, live_transcript.snapshot())
 
 
 def _live_transcript_writer_loop(
