@@ -247,6 +247,12 @@ real pelo endpoint do produto, com backup e verificação de integridade;
 Actions em v7; `DESIGN.md` e `MOTION.md`; `prefers-reduced-motion`; nomes
 acessíveis em 11 campos + grupos de botões + regiões vivas.
 
+### Marco
+
+`v1.0.0` marcada em `dcdf71b` e publicada como release. Clone limpo validado
+seguindo só o que está documentado: `npm install && npm run build` gera o
+`dist`, o painel detecta o build, e `pytest -q` roda os 670 testes ali.
+
 ### Decisão consciente não tomada
 
 Sem `CODE_OF_CONDUCT.md`: o Contributor Covenant exige um canal privado de
@@ -254,6 +260,9 @@ denúncia, o GitHub não tem mensagem direta, e publicar um e-mail pessoal é
 decisão do proprietário. Sem tokens de design centralizados ainda: `DESIGN.md`
 define o conjunto, mas adicionar token que nenhum componente usa seria código
 morto — entra junto com a primeira tela a ser convertida.
+
+O painel que está rodando nesta máquina foi iniciado **antes** dos commits
+desta sessão: ele precisa ser reiniciado para receber as correções.
 
 ### Próxima tarefa
 
