@@ -3,6 +3,73 @@
 Resumo por fase/marco (ver `docs/ROADMAP.md` para o detalhe de escopo de
 cada uma e `git log` para o histórico completo de commits).
 
+## Licença, agendamento confiável e base visual (não lançado)
+
+Sessão disparada por um agendamento real que **não gravou**. A investigação
+virou o eixo da sessão: a mensagem exibida (*"O aplicativo não estava
+disponível naquele horário"*) era falsa, e a causa real nunca chegava a
+lugar nenhum. Reconstituição completa em `docs/SCHEDULING.md`.
+
+### Corrigido
+
+- **Preflight do agendamento não derruba mais o tick.** `_check_readiness`
+  chamava a sonda de dispositivo direto, e ela levanta `AudioError` quando o
+  backend de áudio não está disponível. A exceção atravessava o preflight,
+  o `except Exception` do `tick_once` engolia, nada era salvo no agendamento
+  e, 60 s depois, a ocorrência virava `missed` com a mensagem genérica de
+  "app fechado" — porque a distinção `MISSED`/`FAILED` depende justamente do
+  `error_message` que a exceção impediu de existir. Agora toda sonda vira
+  veredito e a ocorrência termina em `FAILED` com a causa verdadeira.
+- **Fuso que deixa de resolver não paralisa mais o agendamento em silêncio.**
+  Sem `tzdata` (no Windows o `zoneinfo` não tem base própria),
+  `next_occurrence` estourava em todo tick, para sempre. Agora a causa é
+  registrada uma vez, `next_run_at` é zerado para a tela não prometer um
+  horário impossível, e o agendamento volta sozinho quando a dependência
+  retorna.
+- **Medidor de nível não anima mais `width`.** Recebia amostra ~10x por
+  segundo com `transition-[width]`: recálculo de layout por quadro numa
+  máquina já a 100% de CPU transcrevendo, e a barra ficava atrasada em
+  relação ao áudio que ela reporta.
+- **Mensagens de inicialização legíveis no console do Windows** (eram ASCII
+  quebrado sob cp1252, justamente onde precisam ser lidas).
+
+### Adicionado
+
+- **`LICENSE` (Apache-2.0)** — o repositório não tinha licença, ou seja,
+  todos os direitos reservados. Escolhida após auditar 6 dependências de
+  backend e 137 pacotes do frontend: nenhum copyleft forte, nenhum código de
+  terceiros incorporado (`docs/LICENSES.md`).
+- **`check_runtime_health()`** — o painel agora diz o que está faltando
+  (pacote, fuso, build do React) **antes** de se anunciar pronto, em vez de
+  subir normalmente e falhar só na hora da aula agendada.
+- **`iniciar.bat` confiável** — checa Python antes de usar, recusa `.venv`
+  incompleto e explica a ausência do build do React em vez de servir a
+  interface legada em silêncio.
+- **`DESIGN.md` e `MOTION.md`** — autoridade visual do produto. O
+  `index.css` tinha uma linha só, sem token nenhum.
+- **`prefers-reduced-motion`** respeitado (as utilidades de animação do
+  Tailwind não respeitam sozinhas).
+
+### Segurança
+
+- *Private vulnerability reporting* habilitado no GitHub; `docs/SECURITY.md`
+  descreve o canal e registra que nenhum e-mail é publicado de propósito.
+- Actions atualizadas para v7 — fim dos avisos de depreciação do Node 20.
+
+### Dados
+
+- As 3 reuniões-fantasma deixadas por testes foram removidas do banco real
+  pelo endpoint do próprio produto (soft delete, nenhum arquivo tocado),
+  com backup e verificação de integridade antes e depois.
+
+### Limitações conhecidas
+
+- Transcrever durante a gravação **satura a CPU** (medido: 100% num
+  i5-11400H, com `small` em CPU e blocos de 300 s). Nada se perde, mas o
+  backlog cresce e o encerramento precisa drená-lo.
+- Nenhum campo de formulário tem nome acessível (`docs/PENDENCIAS.md`,
+  P2-11). Auditado, ainda não corrigido.
+
 ## Retomada — CI verde, recuperação e histórico (não lançado)
 
 Reconstrução do estado real a partir de `cc9c095`, antes de implementar:
