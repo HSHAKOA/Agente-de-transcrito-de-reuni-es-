@@ -32,6 +32,8 @@ __pycache__/
 !/README.md
 !/CHANGELOG.md
 !/CONTRIBUTING.md
+!/DESIGN.md
+!/MOTION.md
 
 # transcricao pessoal real sem extensao (mesma anotacao de aula que as
 # regras de *.md acima ja cobrem quando salva com extensao) -- ignorada
