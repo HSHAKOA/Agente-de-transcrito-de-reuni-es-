@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from meeting_transcriber.audio.models import AudioHealthResult
+from meeting_transcriber.audio.models import AudioError, AudioErrorCode, AudioHealthResult
 from meeting_transcriber.scheduling.clock import ManualClock
 from meeting_transcriber.scheduling.engine import SchedulerEngine
 from meeting_transcriber.scheduling.models import (
@@ -578,3 +578,154 @@ def test_clock_jump_forward_does_not_crash_and_resolves_missed(tmp_path: Path, b
     loaded = engine._store.get("sch_1")
     assert loaded.history[-1].status == STATUS_MISSED
     assert backend.start_calls == []
+
+
+# -- o preflight nunca pode derrubar o tick ---------------------------------
+#
+# Regressao de um incidente real (21/09/2026): o painel subiu num interpretador
+# sem `soundcard`, `check_device_health` passou a levantar AudioError, o
+# preflight morreu no meio, `tick_once` engoliu a excecao (nada foi salvo no
+# agendamento) e 60 s depois a aula virou "missed" com a mensagem generica
+# "O aplicativo nao estava disponivel naquele horario" -- falso: o app estava
+# aberto e tentando. A causa real so existia num log de terminal.
+
+
+def _raising_device_health(exc):
+    def _probe(kind, device_id, samplerate, probe_seconds=0.3, backend=None):
+        raise exc
+
+    return _probe
+
+
+def test_audio_backend_error_at_preflight_fails_with_the_real_cause(tmp_path: Path, backend: FakeBackend):
+    """AudioError na sonda vira veredito de preflight, nao excecao solta."""
+    clock = ManualClock(START_UTC)
+    engine = _make_engine(
+        tmp_path,
+        clock,
+        backend,
+        missed_tolerance_seconds=60,
+        check_device_health=_raising_device_health(
+            AudioError(AudioErrorCode.BACKEND_UNAVAILABLE, "O motor de audio nao esta disponivel neste momento.")
+        ),
+    )
+    engine._store.save(_schedule(tmp_path))
+
+    engine.tick_once()  # horario de inicio: tenta iniciar e reprova no preflight
+    run = engine._store.get("sch_1").current_run
+    assert backend.start_calls == []  # nunca grava com o backend quebrado
+    assert "O motor de audio nao esta disponivel" in (run.error_message or "")
+
+    clock.advance(seconds=120)  # passa da tolerancia de "missed"
+    engine.tick_once()
+
+    loaded = engine._store.get("sch_1")
+    run = loaded.current_run or loaded.history[-1]
+    # o ponto da regressao: FAILED com a causa verdadeira, nunca MISSED
+    assert run.status == STATUS_FAILED
+    assert "O motor de audio nao esta disponivel" in run.error_message
+    assert "nao estava disponivel naquele horario" not in run.error_message
+
+
+def test_unexpected_probe_crash_becomes_preflight_problem(tmp_path: Path, backend: FakeBackend):
+    """Qualquer excecao da sonda (driver, bug de terceiro) vira veredito."""
+    clock = ManualClock(START_UTC)
+    engine = _make_engine(
+        tmp_path,
+        clock,
+        backend,
+        check_device_health=_raising_device_health(RuntimeError("driver explodiu")),
+    )
+    engine._store.save(_schedule(tmp_path))
+
+    engine.tick_once()
+
+    run = engine._store.get("sch_1").current_run
+    assert backend.start_calls == []
+    assert "Audio do computador" in run.error_message
+    assert "driver explodiu" in run.error_message
+
+
+def test_folder_check_oserror_becomes_preflight_problem(tmp_path: Path, backend: FakeBackend):
+    """Disco removido entre o mkdir e a checagem nao derruba o tick."""
+
+    def _exploding_folder_health(path):
+        raise OSError("dispositivo nao esta pronto")
+
+    clock = ManualClock(START_UTC)
+    engine = _make_engine(tmp_path, clock, backend, check_folder_health=_exploding_folder_health)
+    engine._store.save(_schedule(tmp_path))
+
+    engine.tick_once()
+
+    run = engine._store.get("sch_1").current_run
+    assert backend.start_calls == []
+    assert "dispositivo nao esta pronto" in run.error_message
+
+
+# -- banco de fusos ausente (tzdata) ----------------------------------------
+
+
+def test_missing_timezone_database_marks_schedule_failed_with_real_cause(
+    tmp_path: Path, backend: FakeBackend
+):
+    """Mesmo incidente, segundo sintoma: sem `tzdata` o `next_occurrence`
+    estoura em TODO tick e o agendamento fica permanentemente inerte, sem
+    nenhum sinal na interface. Um nome de fuso que nao resolve reproduz
+    exatamente o que o `zoneinfo` faz quando a base de fusos nao existe."""
+    clock = ManualClock(START_UTC)
+    engine = _make_engine(tmp_path, clock, backend)
+    engine._store.save(_schedule(tmp_path, timezone="Zona/Inexistente"))
+
+    engine.tick_once()  # nao pode propagar excecao
+
+    loaded = engine._store.get("sch_1")
+    assert loaded.status == STATUS_FAILED
+    assert loaded.next_run_at is None  # nunca prometer um horario que nao vai disparar
+    assert backend.start_calls == []
+
+
+def test_missing_timezone_database_is_recorded_only_once(tmp_path: Path, backend: FakeBackend):
+    """Nao reescreve schedules.json a cada tick (20 s) enquanto a dependencia
+    estiver faltando -- o erro e persistente, o registro e uma vez so."""
+    clock = ManualClock(START_UTC)
+    engine = _make_engine(tmp_path, clock, backend)
+    engine._store.save(_schedule(tmp_path, timezone="Zona/Inexistente"))
+
+    saves = []
+    original_save = engine._store.save
+
+    def _counting_save(schedule):
+        saves.append(schedule.id)
+        return original_save(schedule)
+
+    engine._store.save = _counting_save
+
+    engine.tick_once()
+    first = len(saves)
+    engine.tick_once()
+    engine.tick_once()
+
+    assert first == 1
+    assert len(saves) == 1  # ticks seguintes nao regravam nada
+
+
+def test_schedule_recovers_when_the_timezone_database_comes_back(tmp_path: Path, backend: FakeBackend):
+    """`is_open()` so exclui `cancelled`, entao reinstalar a dependencia faz o
+    agendamento voltar sozinho -- sem exigir recadastro."""
+    clock = ManualClock(START_UTC - timedelta(minutes=10))
+    engine = _make_engine(tmp_path, clock, backend)
+    engine._store.save(_schedule(tmp_path, timezone="Zona/Inexistente"))
+    engine.tick_once()
+    assert engine._store.get("sch_1").status == STATUS_FAILED
+
+    repaired = engine._store.get("sch_1")
+    repaired.timezone = "America/Sao_Paulo"  # dependencia reinstalada
+    engine._store.save(repaired)
+
+    engine.tick_once()
+    clock.set(START_UTC)
+    engine.tick_once()
+
+    assert len(backend.start_calls) == 1
+    assert engine._store.get("sch_1").current_run.status == STATUS_RECORDING

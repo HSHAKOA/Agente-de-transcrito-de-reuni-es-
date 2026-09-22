@@ -28,7 +28,7 @@ from typing import Callable, Optional
 
 from .. import validation as base_validation
 from ..audio import devices as audio_devices
-from ..audio.models import AudioHealthResult
+from ..audio.models import AudioError, AudioHealthResult
 from .clock import Clock
 from .models import (
     STATUS_CANCELLED,
@@ -43,7 +43,7 @@ from .models import (
     ScheduleRun,
     TERMINAL_RUN_STATUSES,
 )
-from .recurrence import next_occurrence, to_schedule_zone
+from .recurrence import InvalidTimeZone, next_occurrence, to_schedule_zone
 from .store import ScheduleStore
 
 logger = logging.getLogger("meeting_transcriber.scheduling")
@@ -133,6 +133,8 @@ class SchedulerEngine:
                 continue
             try:
                 self._tick_schedule(schedule, now)
+            except InvalidTimeZone as exc:
+                self._mark_timezone_unusable(schedule, exc)
             except Exception:
                 logger.exception("Erro processando o agendamento %s", schedule.id)
 
@@ -183,6 +185,36 @@ class SchedulerEngine:
         return True, "Ocorrencia perdida descartada."
 
     # -- maquina de estados interna ------------------------------------------
+
+    def _mark_timezone_unusable(self, schedule: Schedule, exc: InvalidTimeZone) -> None:
+        """O nome do fuso e validado no CADASTRO (`scheduling/validation.py`),
+        entao chegar aqui significa que o banco de fusos sumiu do ambiente
+        DEPOIS: no Windows `zoneinfo` nao tem base propria e depende do pacote
+        `tzdata` (requirements.txt). Sem tratar, `next_occurrence` estoura em
+        todo tick, o `except Exception` acima engole, e o agendamento fica
+        permanentemente inerte sem nenhum sinal na interface -- aconteceu de
+        verdade (ver docs/SCHEDULING.md). Registra a causa REAL uma unica vez;
+        `is_open()` continua True, entao o agendamento volta a funcionar
+        sozinho assim que a dependencia for reinstalada."""
+        message = (
+            f"Nao foi possivel resolver o fuso “{schedule.timezone}” nesta instalacao. "
+            "No Windows o banco de fusos vem do pacote tzdata "
+            "(pip install -r requirements.txt). Este agendamento nao vai "
+            "disparar enquanto isso nao for corrigido."
+        )
+        run = schedule.current_run
+        if schedule.status == STATUS_FAILED and (run is None or run.error_message == message):
+            return  # ja registrado -- nao reescreve o arquivo a cada tick
+        if run is not None:
+            run.status = STATUS_FAILED
+            run.error_message = message
+        schedule.status = STATUS_FAILED
+        # `next_run_at` ficaria apontando pra um horario que comprovadamente
+        # NAO vai disparar -- mentira visivel na tela de Agendamentos. Quando a
+        # dependencia voltar, `_claim_next_occurrence` recalcula.
+        schedule.next_run_at = None
+        self._store.save(schedule)
+        logger.error("Agendamento %s: %s (%s)", schedule.id, message, exc)
 
     def _tick_schedule(self, schedule: Schedule, now: datetime) -> None:
         for _ in range(_MAX_STEPS_PER_TICK):
@@ -351,20 +383,39 @@ class SchedulerEngine:
         except OSError as exc:
             problems.append(f"Nao foi possivel criar a pasta “{root}”: {exc}")
         else:
-            folder_result = self._check_folder_health(root)
-            if not folder_result.ok:
-                problems.append(folder_result.message)
+            try:
+                folder_result = self._check_folder_health(root)
+            except OSError as exc:
+                # disco removido/rede caida entre o mkdir e a checagem
+                problems.append(f"Nao foi possivel checar a pasta “{root}”: {exc}")
+            else:
+                if not folder_result.ok:
+                    problems.append(folder_result.message)
         if schedule.system_audio_enabled:
-            health: AudioHealthResult = self._check_device_health(
-                "output", schedule.system_device_id, self._sample_rate
-            )
-            if not health.ok:
-                problems.append(f"Audio do computador: {health.message}")
+            problems.extend(self._probe_device("output", "Audio do computador", schedule.system_device_id))
         if schedule.microphone_enabled:
-            health = self._check_device_health("input", schedule.microphone_device_id, self._sample_rate)
-            if not health.ok:
-                problems.append(f"Microfone: {health.message}")
+            problems.extend(self._probe_device("input", "Microfone", schedule.microphone_device_id))
         return {"ok": not problems, "message": " ".join(problems) if problems else "READY"}
+
+    def _probe_device(self, kind: str, label: str, device_id: Optional[str]) -> "list[str]":
+        """Sonda um dispositivo e devolve os problemas encontrados (lista vazia
+        = saudavel). NUNCA propaga excecao, e isso e o ponto: `check_device_health`
+        levanta `AudioError` quando o backend de audio nao esta disponivel
+        (`soundcard` ausente, driver quebrado). Propagando, o preflight morre no
+        meio, `tick_once` engole o erro, NADA e salvo no agendamento e 60 s
+        depois a ocorrencia vira "missed" com a mensagem generica de aplicativo
+        fechado -- apontando o usuario para a causa errada enquanto a real fica
+        so num log de terminal. Transformando em veredito, `_try_start` marca a
+        ocorrencia como FAILED com a causa verdadeira (ver a distincao
+        MISSED x FAILED em `_process_schedule_step`)."""
+        try:
+            health: AudioHealthResult = self._check_device_health(kind, device_id, self._sample_rate)
+        except AudioError as exc:
+            return [f"{label}: {exc.message}"]
+        except Exception as exc:  # noqa: BLE001 -- vira veredito, nunca silencio
+            logger.exception("Falha inesperada sondando %s no preflight", label)
+            return [f"{label}: falha ao checar o dispositivo ({type(exc).__name__}: {exc})."]
+        return [] if health.ok else [f"{label}: {health.message}"]
 
     def _build_start_opts(self, schedule: Schedule) -> dict:
         return {
