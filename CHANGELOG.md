@@ -26,10 +26,21 @@ lugar nenhum. Reconstituição completa em `docs/SCHEDULING.md`.
   registrada uma vez, `next_run_at` é zerado para a tela não prometer um
   horário impossível, e o agendamento volta sozinho quando a dependência
   retorna.
+- **`os.replace` negado pelo Windows durante a gravação.** Numa gravação real
+  de 1h53, a troca de `levels.json` — feita 5x por segundo enquanto o painel
+  lia o mesmo arquivo para o SSE — falhou dezenas de vezes com
+  `PermissionError [WinError 5]`, e cada falha despejava um traceback
+  completo no log (o log de 300 linhas do painel virou quase só isso). O
+  retry para essa negação transitória já existia em `settings.py` e em
+  `scheduling/store.py`, em duas cópias, e faltava justamente no `cli.py`.
+  Agora há uma cópia só, em `atomic.py`, usada também pelo `session.py`.
 - **Medidor de nível não anima mais `width`.** Recebia amostra ~10x por
   segundo com `transition-[width]`: recálculo de layout por quadro numa
   máquina já a 100% de CPU transcrevendo, e a barra ficava atrasada em
   relação ao áudio que ela reporta.
+- **Campos de formulário sem nome acessível.** Em Nova Reunião e Agendamento
+  os `<label>` eram irmãos do campo, sem `htmlFor`/`id`: um leitor de tela
+  anunciava "campo de edição, vazio" em 11 campos.
 - **Mensagens de inicialização legíveis no console do Windows** (eram ASCII
   quebrado sob cp1252, justamente onde precisam ser lidas).
 
@@ -62,13 +73,30 @@ lugar nenhum. Reconstituição completa em `docs/SCHEDULING.md`.
   pelo endpoint do próprio produto (soft delete, nenhum arquivo tocado),
   com backup e verificação de integridade antes e depois.
 
+### Validado com hardware real
+
+Os dois últimos bloqueadores da V1.0, que até aqui só tinham sido exercitados
+com dublês:
+
+- **Encerramento gracioso**: gravação real de **1h53** (23 blocos de 300 s),
+  parada pelo painel com 2 blocos de backlog e a CPU a 100% — terminou
+  `completed`, **23/23 transcritos**, `exit_code=0`. Com a janela fixa de 30 s
+  anterior, esse "Parar" teria caído em `terminate()`.
+- **Recuperação**: a aula interrompida de 21/09 foi marcada `interrupted` na
+  inicialização, apareceu no banner do React e foi reprocessada pelo endpoint
+  oficial — **11/11 blocos**, `completed`, 654 segmentos, os 33 WAVs
+  (293 MB) intactos.
+
 ### Limitações conhecidas
 
 - Transcrever durante a gravação **satura a CPU** (medido: 100% num
   i5-11400H, com `small` em CPU e blocos de 300 s). Nada se perde, mas o
   backlog cresce e o encerramento precisa drená-lo.
-- Nenhum campo de formulário tem nome acessível (`docs/PENDENCIAS.md`,
-  P2-11). Auditado, ainda não corrigido.
+- Captura **simultânea** sistema+microfone segue sem validação numa gravação
+  longa real (a de 1h53 usou só áudio do sistema); `device=cuda` nunca foi
+  exercitado nesta máquina.
+- Acessibilidade corrigida na Gravação e nos formulários; Dashboard, Detalhe
+  e Agendamentos continuam sem `aria-*` (`docs/PENDENCIAS.md`, P2-11).
 
 ## Retomada — CI verde, recuperação e histórico (não lançado)
 

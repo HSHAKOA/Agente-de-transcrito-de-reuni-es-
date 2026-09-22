@@ -190,3 +190,71 @@ modificado.
 ### Próxima tarefa
 
 Ver `docs/HANDOFF_PROXIMA_SESSAO.md`.
+
+---
+
+## Checkpoint 4 — Licença, agendamento confiável e validação com hardware
+
+Sessão que começou com um agendamento real **não gravando** e terminou com os
+dois últimos bloqueadores da V1.0 validados com hardware de verdade. Partiu de
+`5f2bb07` (Git limpo, sincronizado, CI verde pela primeira vez).
+
+### O incidente que definiu a sessão
+
+O painel foi reiniciado com o Python **global** em vez do `.venv`. Ele subiu
+normalmente — tela, histórico, detecção de sessões interrompidas — e só falhou
+quando a aula das 21:00 tentou gravar. A interface disse *"O aplicativo não
+estava disponível naquele horário"*, **falso**: o painel estava aberto e
+tentando a cada 20 s. Reconstituição completa em `docs/SCHEDULING.md`.
+
+O erro de operação (interpretador errado) foi meu. Os três defeitos de produto
+que ele revelou são independentes dele e valiam ser corrigidos:
+
+| Defeito | Correção |
+|---|---|
+| `_check_readiness` levantava exceção; `tick_once` engolia; nada era salvo; 60 s depois virava `missed` com a causa errada | `_probe_device`: toda sonda vira veredito, e a ocorrência termina `FAILED` com a causa real |
+| Fuso que deixa de resolver (sem `tzdata`) estourava em **todo** tick, para sempre, em silêncio | `_mark_timezone_unusable`: registra uma vez, zera `next_run_at`, e o agendamento se recupera sozinho |
+| Painel subia sem dependências e só falhava na hora da aula | `check_runtime_health()` imprime o que falta **antes** de se anunciar pronto |
+
+### Validação com hardware real (os dois gates que faltavam)
+
+| Gate | Resultado |
+|---|---|
+| Encerramento gracioso numa gravação longa | **1h53**, 23 blocos, parada pelo painel com backlog e CPU a 100% → `completed`, **23/23**, `exit_code=0` |
+| Recuperação da aula de 21/09 | `interrupted` na inicialização → Reprocessar → **11/11**, `completed`, 654 segmentos, 33 WAVs intactos |
+
+O `os.replace` do `levels.json` falhando dezenas de vezes durante essa
+gravação de 1h53 revelou o quarto defeito: o retry para a negação transitória
+do Windows existia em `settings.py` e em `scheduling/store.py` (duas cópias) e
+**não** existia em `cli.py`, o escritor mais quente do produto (5x/segundo).
+Agora há uma cópia só, em `atomic.py`.
+
+### Baseline ao final
+
+| Verificação | Resultado |
+|---|---|
+| `pytest -q` | **670 passed** (era 650) |
+| `npm test` | **82 passed** em 11 arquivos (era 79) |
+| `npm run build` | ok — 282 KB JS (83 KB gzip), 20,5 KB CSS |
+| `npx oxlint` | 0 erros, os mesmos **5** avisos `set-state-in-effect` |
+| CI remoto | verde nos dois jobs, **sem avisos de depreciação** |
+
+### Fechado nesta sessão
+
+`LICENSE` (Apache-2.0, auditoria em `docs/LICENSES.md`); *Private
+vulnerability reporting* habilitado; 3 reuniões-fantasma removidas do banco
+real pelo endpoint do produto, com backup e verificação de integridade;
+Actions em v7; `DESIGN.md` e `MOTION.md`; `prefers-reduced-motion`; nomes
+acessíveis em 11 campos + grupos de botões + regiões vivas.
+
+### Decisão consciente não tomada
+
+Sem `CODE_OF_CONDUCT.md`: o Contributor Covenant exige um canal privado de
+denúncia, o GitHub não tem mensagem direta, e publicar um e-mail pessoal é
+decisão do proprietário. Sem tokens de design centralizados ainda: `DESIGN.md`
+define o conjunto, mas adicionar token que nenhum componente usa seria código
+morto — entra junto com a primeira tela a ser convertida.
+
+### Próxima tarefa
+
+Ver `docs/HANDOFF_PROXIMA_SESSAO.md`.

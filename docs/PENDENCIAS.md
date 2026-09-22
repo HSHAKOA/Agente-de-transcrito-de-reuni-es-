@@ -18,7 +18,7 @@ reproduzível, core estável, testes, docs e GitHub organizados.
 
 | Critério | Estado |
 |---|---|
-| Core estável (áudio, transcrição, recovery, agendador, SQLite) | pronto, com a ressalva da validação real abaixo |
+| Core estável (áudio, transcrição, recovery, agendador, SQLite) | pronto, **validado com hardware real** (ver a última seção) |
 | React funcional, 8 telas + recuperação, cada uma testada | pronto |
 | Histórico dedicado (busca, status, período, paginação) | pronto |
 | Testes reproduzíveis (backend, frontend) | pronto |
@@ -38,14 +38,7 @@ parar, recuperar, agendar, buscar, exportar) funciona e está testado.
 
 ## P1 — valem antes de chamar de V1.0
 
-1. **Validar com hardware real o que mudou no encerramento e no
-   reprocessamento.** Espera ciente de progresso, marca imediata de
-   `interrupted` e "Reprocessar" pelo React só rodaram com dublês e HTTP
-   simulado. Uma gravação longa real (≥ 15 min) parada pelo painel deve
-   terminar em `completed`.
-2. **Reunião real de 21/09 aguardando Reprocessar** (9/11 blocos; áudio
-   íntegro) — ver `docs/HANDOFF_PROXIMA_SESSAO.md`.
-3. **Transcrição durante a gravação satura a CPU.** Medido em 21/09/2026
+1. **Transcrição durante a gravação satura a CPU.** Medido em 21/09/2026
    num i5-11400H (6 núcleos/12 threads): com `small` em CPU e blocos de
    300 s, a transcrição durável mantém a máquina em **99-100%** durante toda
    a gravação, e o `soundcard` emite `data discontinuity in recording`. A
@@ -53,15 +46,15 @@ parar, recuperar, agendar, buscar, exportar) funciona e está testado.
    mas o backlog cresce e o encerramento precisa drená-lo. Não há hoje
    nenhum limite de paralelismo nem opção de "transcrever só no final".
    Investigar antes de prometer transcrição ao vivo em máquina modesta.
-4. **Speaker por segmento.** Hoje o rótulo é por reunião; na captura
+2. **Speaker por segmento.** Hoje o rótulo é por reunião; na captura
    simultânea tudo vira "Reunião". O áudio por canal já é guardado
    (`audio/microphone/`, `audio/system/`), então dá para atribuir cada
    segmento ao canal dominante (energia RMS na janela) sem regravar e sem
    diarização por voz. Só funciona com `keep_audio` ligado.
-5. **Migrar `schedules.json` para SQLite** — plano pronto em
+3. **Migrar `schedules.json` para SQLite** — plano pronto em
    `docs/DATABASE.md`. Sem urgência (o agendador funciona em JSON); vale
    quando algo precisar consultar agendamentos junto com reuniões.
-6. **Windows Task Scheduler (Nível 2 do agendamento).** Um agendamento só
+4. **Windows Task Scheduler (Nível 2 do agendamento).** Um agendamento só
    dispara com o painel aberto. Não prometer antes de validar "acordar o
    computador" nesta máquina.
 
@@ -196,6 +189,15 @@ ter o arquivo do que ter um com um contato que não funciona.
 Ver a seção "Testado" de cada `docs/<FASE>.md` (`AUDIO` em `docs/API.md`,
 `docs/LIVE_TRANSCRIPTION.md`, `docs/SCHEDULING.md`, `docs/DATABASE.md`) para a
 distinção exata IMPLEMENTADO ≠ TESTADO COM FAKE ≠ TESTADO COM HARDWARE REAL em
-cada fase — nunca conflate os três. Nesta retomada **nada foi testado com
-hardware real**: o que mudou no encerramento e no reprocessamento está
-coberto por dublês e por testes HTTP (item P1-2).
+cada fase — nunca conflate os três.
+
+**Validado com hardware real em 21-22/09/2026** (as duas coisas que faltavam):
+
+| O quê | Evidência |
+|---|---|
+| Encerramento gracioso ciente de progresso | Gravação real de **1h53** (23 blocos de 300 s, áudio do sistema), parada pelo painel com 2 blocos de backlog e a CPU a 100%. Terminou `completed`, **23/23 transcritos**, `exit_code=0`, 1266 segmentos indexados. Com a janela fixa de 30 s anterior, esse "Parar" teria caído em `terminate()`. |
+| Marca imediata de `interrupted` + "Reprocessar" pelo React | A aula de 21/09 (`2026-09-21_1901_ingles210926_f69f89`) foi marcada `interrupted` na inicialização do painel, apareceu no banner de recuperação e foi reprocessada pelo endpoint oficial: **11/11 blocos**, `completed`, `exit_code=0`, 654 segmentos, 33 WAVs (293 MB) intactos. |
+
+O que **continua** sem validação com hardware real: captura simultânea
+sistema+microfone numa gravação longa (a aula de 1h53 usou só áudio do
+sistema), e `device=cuda` (nunca exercitado nesta máquina).

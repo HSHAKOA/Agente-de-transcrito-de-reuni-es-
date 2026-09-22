@@ -2,116 +2,103 @@
 
 ## Estado atual
 
-Branch `main`. HEAD: ver `git log -1`. A sessão de retomada partiu de
-`cc9c095` e acrescentou commits pequenos e semânticos (`git log
-cc9c095..HEAD`). **Nenhum foi enviado ao `origin`**: o push depende de
-autorização explícita do proprietário (ver "Próxima ação exata").
+Branch `main`, árvore limpa, sincronizada com `origin/main`. CI verde nos dois
+jobs, sem avisos de depreciação.
 
-O **CI do GitHub nunca esteve verde** — as 9 execuções do histórico falharam
-(4 testes no runner Windows: 3 dependiam da placa de som real, 1 dependia do
-fuso do PC). Está corrigido e verificado localmente (suíte inteira sob
-`TZ=UTC0` e com sondas de áudio reais proibidas), mas **só um push confirma
-o verde no GitHub**.
+| Verificação | Resultado |
+|---|---|
+| `pytest -q` | 670 passed |
+| `npm test` | 82 passed em 11 arquivos |
+| `npm run build` | ok — 282 KB JS (83 KB gzip), 20,5 KB CSS |
+| `npx oxlint` | 0 erros, 5 avisos `set-state-in-effect` (pré-existentes) |
 
-## O que a retomada encontrou e corrigiu
+**A V1.0 não tem mais bloqueador técnico conhecido.** Os dois gates que
+faltavam foram validados com hardware real (ver `docs/EXECUTION_STATE.md`,
+Checkpoint 4): uma gravação de 1h53 parada pelo painel terminou `completed`
+com 23/23 blocos, e a aula interrompida de 21/09 foi recuperada para 11/11.
 
-| # | Achado | Evidência | Correção |
-|---|---|---|---|
-| 1 | CI vermelho desde sempre | `gh run list`: 9/9 `failure` | fixture do `test_webui.py` injeta o fake de saúde no `SchedulerEngine` (o default era capturado no import); mensagens de horário usam o fuso do **agendamento**; CI passa a rodar `npm test` |
-| 2 | Sessão morta ficava `processing` | reunião real de hoje: 9/11 blocos, nenhum processo vivo, `/api/recovery` vazio | `_reader_thread` marca `interrupted` quando o processo morre sem finalizar |
-| 3 | O React não tinha recuperação | `getRecovery`/`resumeMeeting` só no cliente HTTP; o `index.html` legado tinha o card | banner "Sessões interrompidas" + Reprocessar no Dashboard |
-| 4 | **Todo "Parar" de gravação longa caía em `terminate()`** | janela fixa de 30 s × bloco de 300 s na fila do Whisper | espera ciente de progresso (`max(30 s, chunk_seconds)`, reinicia a cada avanço, teto de 30 min) |
-| 5 | Histórico sem paginação de busca; filtro de data quebrado | `date_to` como texto excluía o dia inteiro (reproduzido: devolvia `set()`) | filtros unificados, `total` consistente, tela `History` |
-| 6 | Testes vazaram 3 reuniões-fantasma para o `meetings.db` **real** | linhas apontando para pastas tmp do pytest | fixture espera as threads leitoras antes do undo do monkeypatch |
-| 7 | Dados pessoais a um `git add -A` de distância | 3 pastas de reunião (com áudio) untracked e fora do `.gitignore` | `.gitignore` por assinatura `AAAA-MM-DD_HHMM_*` |
-| 8 | Docs e UI defasados | `ARCHITECTURE.md` parava na Fase B; banner "Prévia (Fase F)" em toda tela | reescritos/removidos |
-| 9 | Servidor recusava Host/Origin **sem ler o corpo** | corpo chegando ≥50 ms depois dos cabeçalhos → `ConnectionAbortedError` em 20/20 tentativas (e uma falha instável do `test_http_post_rejects_disallowed_origin` na verificação final) | `_discard_body()` (drenagem com teto, a mesma do 413) antes de responder 400/403 |
+O que falta para *lançar* é decisão, não código: `CODE_OF_CONDUCT.md` (ver
+abaixo) e apertar o botão da release.
 
-Prova de que os testes pegam o problema: para as correções 1, 2, 5, 9 e para os
-ajustes de Settings/Schedules o código antigo foi reaplicado e os testes novos
-**falharam** (no filtro de data, com `set()` no lugar de 2 reuniões; na busca,
-com `total` 2 em vez de 5). No encerramento (4) há um teste de contraste — o
-mesmo processo lento, sem `progress_fn`, ainda escala para `terminate()`. A
-correção 6 depende de timing e **não foi reproduzida** de forma determinística
-(o banco real continua com 7 linhas após a suíte).
+## Leia antes de mexer em qualquer coisa
 
-## ⚠ Atenção: a reunião real de hoje precisa de "Reprocessar"
-
-`Ingles/2026-09-21_1901_ingles210926_f69f89`: 11 blocos gravados, **9
-transcritos**, os blocos 9 e 10 (~6 min) ainda sem transcrição. **O áudio está
-inteiro** (11 WAVs em cada um de `audio/mixed`, `audio/microphone` e
-`audio/system`). O painel que está aberto roda o código antigo e ainda a vê
-como `processing`. Para completar: fechar e reabrir o painel (`iniciar.bat`)
-— o boot marca a sessão como `interrupted` e o banner do Dashboard oferece
-**Reprocessar**. Nada foi alterado nessa pasta pela retomada.
-
-## O que está 100% pronto
-
-- Captura (sistema, microfone, simultânea), níveis via SSE, transcrição ao
-  vivo, encerramento gracioso, `stopping`, recovery multi-raiz, agendador
-  (com UI), SQLite + auto-indexação, exportação em 5 formatos.
-- React ativo e padrão: **8 telas** — Dashboard, **Histórico**, Nova Reunião,
-  Gravação, Detalhe, Agendamentos (+ formulário) e Configurações — mais o
-  banner de recuperação. Cada tela tem teste próprio.
-- Histórico: busca (título + transcrição) paginada, filtros de status e
-  período combináveis, `total` consistente, data inválida → `400`.
-- Segurança: Host + Origin em todo `POST`, sem CORS, `open_folder`
-  restrito, SQL parametrizado, sem `shell=True`; `docs/SECURITY.md` atualizado.
-
-## O que está parcial
-
-- **Speakers (Fase H)**: o rótulo é **por reunião**; na captura simultânea
-  todo segmento vira "Reunião". O dado para atribuir por segmento já existe
-  (`audio/microphone/` e `audio/system/` por bloco) — ver `docs/INTELLIGENCE.md`.
-- **Agendamentos** ainda em `schedules.json` (plano de migração em
-  `docs/DATABASE.md`); só disparam com o painel aberto.
-- **Acessibilidade** básica: só o Histórico e o banner de recuperação têm
-  `aria-*`/`role` sistemáticos; as demais telas não foram auditadas.
-- **Hardware real**: nada da captura mudou, mas o encerramento novo e o
-  reprocessamento **nunca rodaram com uma gravação de verdade** (só com
-  dublês e HTTP simulado). Testar uma gravação longa real é o próximo passo
-  de validação.
-
-## O que não foi iniciado
-
-Meeting Intelligence (projeto em `docs/INTELLIGENCE.md`), diarização por voz,
-empacotamento Windows (PyInstaller/Nuitka), DOCX/PDF, Windows Task Scheduler,
-integração com calendários, base de conhecimento.
-
-## Testes (medidos nesta sessão)
-
-- **Backend**: `pytest -q` → **650 passed** (era 608), idêntico com
-  `TZ=UTC0` (fuso do runner do CI).
-- **Frontend**: `npm test` → **79 passed em 11 arquivos** (era 26 em 6);
-  `npm run build` ok (tsc + vite); `npx oxlint` → 0 erros, 5 avisos
-  pré-existentes (`set-state-in-effect`).
-- O `vitest` pode estourar o timeout de workers se rodar **junto** com o
-  `pytest` (CPU saturada): rode em sequência.
+1. `docs/SCHEDULING.md`, seção **"Incidente 21/09/2026"**. É a reconstituição
+   de um agendamento que não gravou e explicou a causa errada ao usuário. A
+   lição vale além do bug: `except Exception` num laço de controle manteve o
+   motor vivo e apagou a única informação que explicaria a falha.
+2. `src/meeting_transcriber/atomic.py`. Toda escrita de arquivo de estado
+   passa por aqui, e o cabeçalho explica por que o retry existe.
+3. `DESIGN.md` e `MOTION.md` se for mexer na interface. São a autoridade
+   visual; `MOTION.md` lista explicitamente o que **não** pode ser animado.
 
 ## Próxima ação exata
 
-1. **Push**: `git push origin main` e conferir `gh run list` —
-   o CI deve ficar verde pela primeira vez. Se o job `frontend` (Ubuntu,
-   Node 22) falhar no `npm test`, é diferença de ambiente e é o primeiro
-   ponto a investigar.
-2. Reprocessar a reunião de hoje (acima).
-3. Fazer uma gravação longa real (≥ 15 min) e parar pelo painel: confirmar
-   que o encerramento agora espera a fila e termina em `completed`.
-4. Decisões do proprietário que bloqueiam a V1.0: **licença**
-   (`LICENSE`), habilitar *Private vulnerability reporting* no GitHub,
-   contato/regras de conduta (`CODE_OF_CONDUCT.md`, se quiser).
-5. Depois: G.1 do `docs/INTELLIGENCE.md` (interface + validador + migration
-   2, sem LLM), ou a atribuição de canal por segmento (Fase H leve).
+**Fase G — Meeting Intelligence.** Projeto pronto e revisável em
+`docs/INTELLIGENCE.md`: provider plugável (`MeetingIntelligenceProvider`), o
+núcleo continua funcionando sem provider nenhum, e o modelo de dados
+(`meeting_analysis`, `action_items`, `decisions`, `topics`,
+`open_questions`) liga tudo a `meeting_id`/`segment_id`/timestamp.
 
-## Comandos úteis
+A regra inegociável desse projeto, repetida aqui porque é fácil de violar sem
+perceber: **não inventar dado**. Responsável não dito → `owner = null`. Prazo
+não dito → `due_date = null`. Nunca alucinar tarefa.
 
-```bash
-# backend (reproduz o CI: fuso UTC)
-TZ=UTC0 pytest -q
+Antes de escrever código da Fase G, decidir uma coisa só: qual provider entra
+primeiro. O produto é local-first e sem telemetria (`README`, "Privacidade"),
+então um provider que manda transcrição para uma API externa **muda uma
+promessa do produto** e precisa ser opt-in explícito, desligado por padrão, e
+dito na interface. Um modelo local (Ollama) não tem esse problema.
 
-# frontend — rode em sequência, não junto do pytest
-cd frontend && npm run build && npx oxlint && npm test
+### Se preferir fechar frente antes de abrir outra
 
-python webui.py             # painel em http://127.0.0.1:8765 (React se frontend/dist existir)
-gh run list --limit 5       # estado do CI
-```
+Em ordem de valor:
+
+1. **Tokens de design** (`DESIGN.md`, seção 4). `frontend/src/index.css` hoje
+   tem o `@import` e o bloco de `prefers-reduced-motion`, nada mais. Converter
+   uma tela por vez; não adicionar token que nenhum componente use ainda.
+2. **Acessibilidade restante** (`docs/PENDENCIAS.md`, P2-11): Dashboard,
+   Detalhe e Agendamentos seguem sem `aria-*`; fora da Gravação não há
+   hierarquia de títulos; nada foi testado com leitor de tela real.
+3. **Speaker por segmento** (P1-2): o áudio por canal já existe em
+   `audio/microphone/` e `audio/system/`, então dá para atribuir cada segmento
+   ao canal dominante por energia RMS, sem diarização por voz. Só funciona com
+   `keep_audio` ligado.
+
+## Armadilhas desta máquina
+
+- **Sempre rode o painel pelo `.venv`.** O Python global não tem `soundcard`
+  nem `tzdata`; com ele o painel sobe e só falha na hora de uma gravação
+  agendada. `iniciar.bat` faz isso certo. Se subir na mão, o painel agora
+  avisa o que falta — leia o `[ATENCAO]` no terminal.
+- **Não rode `pytest` e `vitest` ao mesmo tempo**, e não rode nenhum dos dois
+  durante uma gravação real: a transcrição sozinha ocupa 100% de um
+  i5-11400H, e o `vitest` falha com *"Timeout waiting for worker to respond"*.
+- **Um agendamento marcado `missed` não dispara sozinho** — é de propósito
+  (nunca começar atrasado em silêncio). Retomar é `start_now`, ou gravar
+  manualmente.
+
+## Pendente de decisão do proprietário
+
+**`CODE_OF_CONDUCT.md`.** O Contributor Covenant exige um canal privado para
+denúncias de conduta. O GitHub não tem mensagem direta entre usuários; o
+*private vulnerability reporting* é para segurança; e publicar um e-mail
+pessoal num repositório público é escolha sua. Um alias dedicado resolve.
+Enquanto não houver canal real, é mais honesto não ter o arquivo.
+
+**Nome no copyright.** `LICENSE` linha 190 traz `Copyright 2026 Joao` — o nome
+usado nos commits. Troque se quiser outro.
+
+**Backup do banco.** `data/meetings.db.backup-20260921-205941` foi criado
+antes da limpeza das reuniões-fantasma. Apague quando estiver satisfeito (está
+em `/data/`, que é ignorado pelo Git).
+
+## Limitações reais, não escondidas
+
+- Transcrever durante a gravação satura a CPU nesta máquina (P1-1). Nada se
+  perde, mas o backlog cresce e o encerramento precisa drená-lo — foi
+  exatamente o caso na gravação de 1h53.
+- Captura **simultânea** sistema+microfone nunca foi validada numa gravação
+  longa real (a de 1h53 usou só áudio do sistema).
+- `device=cuda` nunca foi exercitado nesta máquina.
+- Um clone limpo mostra o painel legado até rodar `npm run build`
+  (`frontend/dist/` não é versionado). O `iniciar.bat` avisa isso agora.
