@@ -3,7 +3,7 @@
 Resumo por fase/marco (ver `docs/ROADMAP.md` para o detalhe de escopo de
 cada uma e `git log` para o histórico completo de commits).
 
-## Licença, agendamento confiável e base visual (não lançado)
+## v1.0.0 — Open Source Stable (2026-09-22)
 
 Sessão disparada por um agendamento real que **não gravou**. A investigação
 virou o eixo da sessão: a mensagem exibida (*"O aplicativo não estava
@@ -98,7 +98,7 @@ com dublês:
 - Acessibilidade corrigida na Gravação e nos formulários; Dashboard, Detalhe
   e Agendamentos continuam sem `aria-*` (`docs/PENDENCIAS.md`, P2-11).
 
-## Retomada — CI verde, recuperação e histórico (não lançado)
+## Retomada — CI verde, recuperação e histórico (incluída na v1.0.0)
 
 Reconstrução do estado real a partir de `cc9c095`, antes de implementar:
 

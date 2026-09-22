@@ -177,10 +177,9 @@ cd frontend && npm ci
 npm run build && npx oxlint && npm test    # frontend
 ```
 
-Cerca de 650 testes de backend, majoritariamente com dublês (fakes) de
-hardware de áudio, relógio e Whisper — não exigem microfone, placa de som
-real, nem baixar nenhum modelo — e cerca de 80 testes de componente no
-frontend. Um subconjunto separado (`test_*_hardware.py`) usa hardware de
+670 testes de backend, majoritariamente com dublês (fakes) de hardware de
+áudio, relógio e Whisper — não exigem microfone, placa de som real, nem
+baixar nenhum modelo — e 82 testes de componente no frontend. Um subconjunto separado (`test_*_hardware.py`) usa hardware de
 áudio real quando disponível e é pulado automaticamente quando não há
 dispositivo de áudio no ambiente (ex.: CI). Ver `docs/TESTING.md` para a
 estratégia completa.
